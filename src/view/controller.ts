@@ -1,16 +1,20 @@
 import * as fs from 'node:fs'
 import * as vscode from 'vscode'
 import { runGit } from '../core/git'
-import { readRecords } from '../core/orchestra'
-import { SessionReader, type History, type Player } from '../core/players'
+import { SessionReader, type GitView, type History, type Player } from '../core/players'
 import { indexRepos, repoEntry, type RepoEntry } from '../core/repoIndex'
 import { RepoRootCache, repoStateLoader, type RepoState } from '../core/repoState'
-import { CLAUDE_PROJECTS, findSession, listCurrentSessions, type SessionRef } from '../core/sessions'
+import { CLAUDE_PROJECTS, CLAUDE_SESSIONS, SessionIndex, type SessionRef } from '../core/sessions'
 import { readSystems, SSH_CONFIG, type GitSystem } from '../core/systems'
+import { WorkspaceScanner, type WorkspaceFile } from '../core/workspace'
 import type { Store } from './store'
 
+export type SessionView = { ref: SessionRef; players: Player[]; workspace: WorkspaceFile[] }
+
 export type Model = {
-  session: SessionRef | null
+  // The sessions and players he has not removed, newest session first.
+  sessions: SessionView[]
+  // Every player of those sessions, for the views that tag files and repos by writer.
   players: Player[]
   systems: GitSystem[]
   repos: RepoEntry[]
@@ -22,17 +26,25 @@ export type Model = {
 const TRANSCRIPT_DELAY_MS = 2000
 // Picked repos are re-read on this beat, so a save by him or by a player shows within 5 s.
 const REPO_POLL_MS = 4000
-const SESSION_CHECK_MS = 60_000
+const SESSION_CHECK_MS = 30_000
 const FETCH_EVERY_MS = 10 * 60 * 1000
 const FETCH_TIMEOUT_MS = 120_000
+
+// One session seen since the panel started: its reader keeps the transcript offsets, and its last
+// read stays in place until the next one replaces it, so a refresh never starts from empty.
+type Tracked = { reader: SessionReader; view: SessionView | null; watcher: fs.FSWatcher | null }
 
 export class Controller implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>()
   readonly onDidChange = this.changed.event
-  readonly model: Model = { session: null, players: [], systems: [], repos: [], states: new Map() }
+  readonly model: Model = { sessions: [], players: [], systems: [], repos: [], states: new Map() }
   private readonly roots = new RepoRootCache()
-  private reader: SessionReader | null = null
-  private watcher: fs.FSWatcher | null = null
+  private readonly index = new SessionIndex(CLAUDE_SESSIONS, CLAUDE_PROJECTS)
+  // Sessions stay tracked for the life of the window, even once their process ends: only his x
+  // takes one off the panel.
+  private readonly tracked = new Map<string, Tracked>()
+  private readonly workspaceRoot: string
+  private readonly scanner: WorkspaceScanner
   private sshWatcher: fs.FSWatcher | null = null
   private pendingRefresh: NodeJS.Timeout | null = null
   private refreshing = false
@@ -44,17 +56,20 @@ export class Controller implements vscode.Disposable {
   constructor(
     private readonly store: Store,
     private readonly log: vscode.OutputChannel,
-  ) {}
+  ) {
+    this.workspaceRoot = vscode.workspace.getConfiguration('liveReview').get<string>('workspaceRoot', '')
+    this.scanner = new WorkspaceScanner(this.workspaceRoot)
+  }
 
   async start(): Promise<void> {
     await this.guard('start', async () => {
-      await this.followSession()
+      await this.discoverSessions()
       await this.rescanRepos()
     })
     this.sshWatcher = watchFile(SSH_CONFIG, () => void this.guard('read ssh config', () => this.rescanRepos()))
     this.timers.push(
       setInterval(() => void this.tick(), REPO_POLL_MS),
-      setInterval(() => void this.guard('check the newest session', () => this.followSession()), SESSION_CHECK_MS),
+      setInterval(() => void this.guard('look for new sessions', () => this.discoverSessions()), SESSION_CHECK_MS),
       setInterval(() => void this.fetchPicked(), FETCH_EVERY_MS),
     )
   }
@@ -114,19 +129,19 @@ export class Controller implements vscode.Disposable {
     await this.refresh()
   }
 
-  async useSession(id: string | null): Promise<void> {
-    await this.store.chooseSession(id)
-    await this.followSession()
-    await this.refresh()
+  // A removed player or session stays removed until a later edit of its own brings it back.
+  async removePlayer(key: string): Promise<void> {
+    await this.dismiss([key])
   }
 
-  async clearFinished(): Promise<void> {
-    const session = this.model.session
-    if (!session) return
-    const cleared = this.store.cleared(session.id)
-    this.model.players.filter((player) => player.verdict.state === 'done').forEach((player) => cleared.add(player.id))
-    await this.store.saveCleared(session.id, cleared)
-    await this.refresh()
+  async clearFinished(session: string): Promise<void> {
+    const players = this.model.sessions.find((view) => view.ref.id === session)?.players ?? []
+    await this.dismiss(players.filter((player) => player.verdict.state === 'done').map((player) => player.key))
+  }
+
+  async removeSession(session: string): Promise<void> {
+    const players = this.tracked.get(session)?.view?.players ?? []
+    await this.dismiss([session, ...players.map((player) => player.key)])
   }
 
   async addRepo(root: string): Promise<void> {
@@ -149,22 +164,22 @@ export class Controller implements vscode.Disposable {
   dispose(): void {
     this.timers.forEach(clearInterval)
     if (this.pendingRefresh) clearTimeout(this.pendingRefresh)
-    this.watcher?.close()
+    this.tracked.forEach((entry) => entry.watcher?.close())
     this.sshWatcher?.close()
     this.changed.dispose()
   }
 
+  // Sessions are read one after the other, for the same memory reason as their transcripts. A
+  // session whose read fails keeps its previous view.
   private async refreshLive(): Promise<void> {
-    const session = this.model.session
-    const git = { roots: this.roots, stateOf: repoStateLoader() }
-    if (session && this.reader) {
-      const files = vscode.workspace.getConfiguration('liveReview').get<string[]>('recordFiles', [])
-      const history = this.store.history(session.id)
-      const players = await this.reader.readPlayers(await readRecords(files), history, git, Date.now())
-      await this.remember(session.id, history, players)
-      const cleared = this.store.cleared(session.id)
-      this.model.players = players.filter((player) => !(cleared.has(player.id) && player.verdict.state === 'done'))
+    const git: GitView = { roots: this.roots, stateOf: repoStateLoader() }
+    const now = Date.now()
+    for (const entry of this.tracked.values()) {
+      await this.guard(`read session ${entry.reader.session.id}`, async () => {
+        entry.view = await this.readSession(entry.reader, git, now)
+      })
     }
+    this.publishSessions()
     await this.addUnlistedRepos()
     const live = new Set([...this.store.picked(), ...this.playedRepos()])
     const states = await Promise.all([...live].map((root) => git.stateOf(root)))
@@ -174,6 +189,31 @@ export class Controller implements vscode.Disposable {
 
   // Each Bash credit seen is kept for the session: when a later write by someone else moves the
   // file's mtime out of this player's window, the player still owns its earlier write.
+  private async readSession(reader: SessionReader, git: GitView, now: number): Promise<SessionView> {
+    const ref = reader.session
+    const history = this.store.history(ref.id)
+    const read = await reader.read(this.workspaceRoot, history, git, now)
+    await this.remember(ref.id, history, read.players)
+    const workspace = await this.scanner.filesSince(read.workspaceFolders, ref.startedAt, now)
+    return { ref, players: read.players, workspace }
+  }
+
+  private publishSessions(): void {
+    const dismissed = this.store.dismissed()
+    this.model.sessions = [...this.tracked.values()]
+      .map((entry) => entry.view)
+      .filter((view): view is SessionView => view !== null && isShown(dismissed.get(view.ref.id), latestChange(view.players)))
+      .map((view) => ({ ...view, players: view.players.filter((player) => isShown(dismissed.get(player.key), player.lastChange)) }))
+      .sort((a, b) => b.ref.startedAt - a.ref.startedAt)
+    this.model.players = this.model.sessions.flatMap((view) => view.players)
+  }
+
+  private async dismiss(keys: string[]): Promise<void> {
+    await this.store.dismiss(keys, Date.now(), new Set(this.tracked.keys()))
+    this.publishSessions()
+    this.changed.fire()
+  }
+
   private async remember(session: string, history: History, players: Player[]): Promise<void> {
     let grew = false
     for (const player of players) {
@@ -185,7 +225,7 @@ export class Controller implements vscode.Disposable {
       }
       history.set(player.id, files)
     }
-    if (grew) await this.store.saveHistory(session, history)
+    if (grew) await this.store.saveHistory(session, history, new Set(this.tracked.keys()))
   }
 
   private async addUnlistedRepos(): Promise<void> {
@@ -196,16 +236,19 @@ export class Controller implements vscode.Disposable {
     this.model.repos.push(...entries)
   }
 
-  private async followSession(): Promise<void> {
-    const chosen = this.store.chosenSession()
-    const session = chosen ? await findSession(CLAUDE_PROJECTS, chosen) : (await listCurrentSessions(CLAUDE_PROJECTS))[0] ?? null
-    if (session?.id === this.model.session?.id) return
-    this.model.session = session
-    this.model.players = []
-    this.reader = session ? new SessionReader(session) : null
-    this.watcher?.close()
-    this.watcher = session ? watchFile(session.subagentsDir, () => this.scheduleRefresh(TRANSCRIPT_DELAY_MS)) : null
-    this.changed.fire()
+  // New live sessions join the panel; the ones already tracked keep their reader and their view.
+  private async discoverSessions(): Promise<void> {
+    this.tracked.forEach((entry) => (entry.watcher ??= this.watchPlayers(entry.reader.session)))
+    const live = await this.index.listLive()
+    const fresh = live.filter((ref) => !this.tracked.has(ref.id))
+    if (fresh.length === 0) return
+    fresh.forEach((ref) => this.tracked.set(ref.id, { reader: new SessionReader(ref), view: null, watcher: this.watchPlayers(ref) }))
+    await this.refresh()
+  }
+
+  // A session with no player yet has no subagents folder; the 4 s beat covers it until it has one.
+  private watchPlayers(ref: SessionRef): fs.FSWatcher | null {
+    return watchFile(ref.subagentsDir, () => this.scheduleRefresh(TRANSCRIPT_DELAY_MS))
   }
 
   private async guard(what: string, work: () => Promise<void>): Promise<void> {
@@ -225,4 +268,13 @@ function watchFile(target: string, onChange: () => void): fs.FSWatcher | null {
   const watcher = fs.watch(target, onChange)
   watcher.on('error', () => watcher.close())
   return watcher
+}
+
+// Shown unless he removed it and it changed nothing since.
+function isShown(dismissedAt: number | undefined, lastChange: number): boolean {
+  return dismissedAt === undefined || lastChange > dismissedAt
+}
+
+function latestChange(players: Player[]): number {
+  return Math.max(0, ...players.map((player) => player.lastChange))
 }

@@ -9,8 +9,9 @@ import type { Store } from './store'
 
 type Node = { kind: 'repo'; root: string } | FileNode
 
-// He wrote it unless a player's transcript says otherwise.
-const NO_PLAYER = 'you'
+// No transcript of a live session credits the file: he saved it himself, or a session that is
+// no longer listed did.
+const NO_PLAYER = 'by hand'
 
 export class ChangesView implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<void>()

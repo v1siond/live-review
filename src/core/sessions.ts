@@ -1,36 +1,114 @@
 import { promises as fs } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { modifiedAt } from './files'
+import { PROJECTS_ROOT } from './repoIndex'
 
 export type SessionRef = {
   id: string
+  // Where the session runs, relative to the projects folder: "game-engine", "REDACTEDREDACTED".
   project: string
+  transcript: string
   subagentsDir: string
-  // Newest append to the session's own transcript or to any of its players' transcripts.
-  lastWrite: number
+  startedAt: number
 }
 
 export type AgentRef = { id: string; transcript: string; meta: string }
 
 export type AgentMeta = { description: string }
 
+// One entry of Claude Code's own registry of its running processes, ~/.claude/sessions/<pid>.json.
+type RegistryEntry = { sessionId?: unknown; cwd?: unknown; startedAt?: unknown; procStart?: unknown; kind?: unknown; entrypoint?: unknown }
+
 const AGENT_TRANSCRIPT = /^agent-(.+)\.jsonl$/
+const REGISTRY_FILE = /^(\d+)\.json$/
+// A terminal session he opened. Headless runs (`claude -p`, the SDK) say "sdk-cli", and background
+// jobs say kind "bg"; neither is a session he has open.
+const INTERACTIVE = { kind: 'interactive', entrypoint: 'cli' }
+// Field 22 of /proc/<pid>/stat, the process start in clock ticks: the registry keeps it so a pid
+// the system gave to another process is not taken for the session.
+const PROC_START_FIELD = 22
 
 export const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects')
+export const CLAUDE_SESSIONS = path.join(os.homedir(), '.claude', 'sessions')
 
-// The newest session of each project folder, newest first. Only sessions that started a
-// player have a subagents folder, and a session with no player has nothing to review.
-export async function listCurrentSessions(projectsRoot: string): Promise<SessionRef[]> {
-  const projects = await readDirNames(projectsRoot)
-  const newest = await Promise.all(projects.map((project) => newestSession(path.join(projectsRoot, project))))
-  return newest.filter((session): session is SessionRef => session !== null).sort((a, b) => b.lastWrite - a.lastWrite)
+// The live sessions are the Claude processes running now: every registry entry whose process is
+// alive, newest start first. The registry also keeps the entries of every process that ended, so
+// an entry counts only while its pid runs with the start time the entry recorded.
+export class SessionIndex {
+  // A session's transcript never moves; it is looked up once per session.
+  private readonly transcripts = new Map<string, string>()
+
+  constructor(
+    private readonly registry: string,
+    private readonly projectsRoot: string,
+  ) {}
+
+  async listLive(): Promise<SessionRef[]> {
+    const pids = (await readDirNames(this.registry)).map((name) => name.match(REGISTRY_FILE)?.[1]).filter((pid): pid is string => pid !== undefined)
+    const sessions = await Promise.all(pids.map((pid) => this.sessionOf(pid)))
+    return sessions.filter((session): session is SessionRef => session !== null).sort((a, b) => b.startedAt - a.startedAt)
+  }
+
+  private async sessionOf(pid: string): Promise<SessionRef | null> {
+    const procStart = await processStart(pid)
+    if (procStart === null) return null
+    const entry = await readEntry(path.join(this.registry, `${pid}.json`))
+    if (!entry || !isLiveInteractive(entry, procStart)) return null
+    const id = String(entry.sessionId)
+    const cwd = String(entry.cwd ?? '')
+    const transcript = await this.transcriptOf(id, cwd)
+    const subagentsDir = path.join(path.dirname(transcript), id, 'subagents')
+    return { id, project: projectLabel(cwd), transcript, subagentsDir, startedAt: Number(entry.startedAt) }
+  }
+
+  // Claude Code names a project folder after the cwd with every character other than a letter or
+  // a digit turned into "-"; a folder named otherwise (a long path is shortened) is found by search.
+  private async transcriptOf(id: string, cwd: string): Promise<string> {
+    const known = this.transcripts.get(id)
+    if (known) return known
+    const named = path.join(this.projectsRoot, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`)
+    const found = (await exists(named)) ? named : await this.searchTranscript(id)
+    if (found) this.transcripts.set(id, found)
+    return found ?? named
+  }
+
+  private async searchTranscript(id: string): Promise<string | null> {
+    const candidates = (await readDirNames(this.projectsRoot)).map((project) => path.join(this.projectsRoot, project, `${id}.jsonl`))
+    const present = await Promise.all(candidates.map(exists))
+    return candidates.find((_candidate, index) => present[index]) ?? null
+  }
 }
 
-export async function findSession(projectsRoot: string, id: string): Promise<SessionRef | null> {
-  const projects = await readDirNames(projectsRoot)
-  const matches = await Promise.all(projects.map((project) => sessionAt(path.join(projectsRoot, project), id)))
-  return matches.find((session) => session !== null) ?? null
+function isLiveInteractive(entry: RegistryEntry, procStart: string): boolean {
+  if (entry.kind !== INTERACTIVE.kind || entry.entrypoint !== INTERACTIVE.entrypoint) return false
+  if (typeof entry.sessionId !== 'string') return false
+  return entry.procStart === undefined || String(entry.procStart) === procStart
+}
+
+// null when no process runs under that pid.
+async function processStart(pid: string): Promise<string | null> {
+  const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8').catch(() => null)
+  if (stat === null) return null
+  // The command name (field 2) sits in brackets and may hold spaces; fields count from after it.
+  const afterName = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+  return afterName[PROC_START_FIELD - 3] ?? null
+}
+
+async function readEntry(file: string): Promise<RegistryEntry | null> {
+  const text = await fs.readFile(file, 'utf8').catch(() => null)
+  if (text === null) return null
+  try {
+    return JSON.parse(text) as RegistryEntry
+  } catch {
+    return null
+  }
+}
+
+async function exists(file: string): Promise<boolean> {
+  return fs.access(file).then(
+    () => true,
+    () => false,
+  )
 }
 
 export async function listAgents(session: SessionRef): Promise<AgentRef[]> {
@@ -58,25 +136,11 @@ export async function readMeta(file: string): Promise<AgentMeta> {
   }
 }
 
-async function newestSession(projectDir: string): Promise<SessionRef | null> {
-  const names = await readDirNames(projectDir)
-  const sessions = await Promise.all(names.map((name) => sessionAt(projectDir, name)))
-  return sessions.reduce<SessionRef | null>((best, session) => {
-    if (!session) return best
-    if (!best || session.lastWrite > best.lastWrite) return session
-    return best
-  }, null)
-}
-
-async function sessionAt(projectDir: string, id: string): Promise<SessionRef | null> {
-  const subagentsDir = path.join(projectDir, id, 'subagents')
-  const agentFiles = (await readDirNames(subagentsDir)).filter((name) => AGENT_TRANSCRIPT.test(name))
-  if (agentFiles.length === 0) return null
-  const writes = await Promise.all([
-    modifiedAt(path.join(projectDir, `${id}.jsonl`)),
-    ...agentFiles.map((name) => modifiedAt(path.join(subagentsDir, name))),
-  ])
-  return { id, project: path.basename(projectDir), subagentsDir, lastWrite: Math.max(...writes) }
+function projectLabel(cwd: string): string {
+  const relative = path.relative(PROJECTS_ROOT, cwd)
+  if (relative === '') return path.basename(PROJECTS_ROOT)
+  if (relative.startsWith('..')) return cwd
+  return relative
 }
 
 async function readDirNames(dir: string): Promise<string[]> {

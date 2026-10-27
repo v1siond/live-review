@@ -5,16 +5,18 @@ const PICKED = 'liveReview.picked'
 const PINNED = 'liveReview.pinned'
 const ADDED = 'liveReview.added'
 const REMOVED = 'liveReview.removed'
-const SESSION = 'liveReview.session'
-const HISTORY = 'liveReview.history'
-const CLEARED = 'liveReview.cleared'
+const HISTORY = 'liveReview.sessionHistory'
+const DISMISSED = 'liveReview.dismissed'
 
-type StoredHistory = { session: string; byAgent: Record<string, string[]> }
-type StoredCleared = { session: string; agents: string[] }
+// Per session id, then per agent id, the files credited to it by the Bash window rule.
+type StoredHistory = Record<string, Record<string, string[]>>
+// Per dismissed key (a session id, or "<session id>/<agent id>"), when he removed it.
+type StoredDismissed = Record<string, number>
 
-// What he chose about repos lives in globalState, so every window shows the same picks. What
-// belongs to one Claude session (its history, the players he cleared) lives in workspaceState
-// and is dropped when the session changes.
+// What he chose lives in globalState, so every window shows the same picks and the same removed
+// sessions and players. The Bash credits seen per session live in workspaceState: each window
+// rebuilds them from the transcripts anyway, they only keep a credit a later save would hide.
+// Both maps keep only the sessions still listed, so neither grows with every session he ever ran.
 export class Store {
   constructor(
     private readonly global: vscode.Memento,
@@ -55,34 +57,24 @@ export class Store {
     await this.toggle(this.global, REMOVED, root, true)
   }
 
-  // null means "follow the newest session".
-  chosenSession(): string | null {
-    return this.workspace.get<string | null>(SESSION, null)
-  }
-
-  chooseSession(id: string | null): Thenable<void> {
-    return this.workspace.update(SESSION, id)
-  }
-
   history(session: string): History {
-    const stored = this.workspace.get<StoredHistory>(HISTORY)
-    if (stored?.session !== session) return new Map()
-    return new Map(Object.entries(stored.byAgent).map(([agent, files]) => [agent, new Set(files)]))
+    const stored = this.workspace.get<StoredHistory>(HISTORY, {})[session] ?? {}
+    return new Map(Object.entries(stored).map(([agent, files]) => [agent, new Set(files)]))
   }
 
-  saveHistory(session: string, history: History): Thenable<void> {
+  saveHistory(session: string, history: History, listed: Set<string>): Thenable<void> {
     const byAgent = Object.fromEntries([...history].map(([agent, files]) => [agent, [...files]]))
-    return this.workspace.update(HISTORY, { session, byAgent })
+    const kept = keepListed(this.workspace.get<StoredHistory>(HISTORY, {}), listed)
+    return this.workspace.update(HISTORY, { ...kept, [session]: byAgent })
   }
 
-  cleared(session: string): Set<string> {
-    const stored = this.workspace.get<StoredCleared>(CLEARED)
-    if (stored?.session !== session) return new Set()
-    return new Set(stored.agents)
+  dismissed(): Map<string, number> {
+    return new Map(Object.entries(this.global.get<StoredDismissed>(DISMISSED, {})))
   }
 
-  saveCleared(session: string, cleared: Set<string>): Thenable<void> {
-    return this.workspace.update(CLEARED, { session, agents: [...cleared] })
+  dismiss(keys: string[], at: number, listed: Set<string>): Thenable<void> {
+    const kept = keepListed(this.global.get<StoredDismissed>(DISMISSED, {}), listed)
+    return this.global.update(DISMISSED, { ...kept, ...Object.fromEntries(keys.map((key) => [key, at])) })
   }
 
   private readSet(memento: vscode.Memento, key: string): Set<string> {
@@ -95,4 +87,9 @@ export class Store {
     if (!on) values.delete(value)
     return memento.update(key, [...values])
   }
+}
+
+// A key is a session id or starts with "<session id>/".
+function keepListed<T>(stored: Record<string, T>, listed: Set<string>): Record<string, T> {
+  return Object.fromEntries(Object.entries(stored).filter(([key]) => listed.has(key.split('/')[0])))
 }

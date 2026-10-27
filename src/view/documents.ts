@@ -19,7 +19,7 @@ export type DiffTarget = {
   relative: string | null
   // A file only in unpushed commits is compared with what the remote has; a dirty one with HEAD.
   committedOnly: boolean
-  // Set when the player's own Edit hunks are the diff to show (see Players view).
+  // The player's key, set when its own Edit hunks are the diff to show (see Sessions view).
   agent?: string
 }
 
@@ -66,13 +66,13 @@ export class ReviewDocuments implements vscode.TextDocumentContentProvider, vsco
   }
 
   private hunks(request: Extract<Request, { kind: 'hunks' }>): string {
-    const player = this.controller.model.players.find((candidate) => candidate.id === request.agent)
+    const player = this.controller.model.players.find((candidate) => candidate.key === request.agent)
     const hunks = player?.hunks.get(request.file) ?? []
     return hunks.map((hunk) => hunk[request.side]).join(HUNK_SEPARATOR)
   }
 
   private timeline(request: Extract<Request, { kind: 'timeline' }>): string {
-    const player = this.controller.model.players.find((candidate) => candidate.id === request.agent)
+    const player = this.controller.model.players.find((candidate) => candidate.key === request.agent)
     if (!player) return `Player ${request.agent} is no longer listed.`
     const lines = player.timeline.map((entry) => `${new Date(entry.time).toLocaleTimeString()}  ${entry.words}`)
     return [`${player.label}`, `${player.verdict.state}: ${player.verdict.rule}`, '', ...lines].join('\n')
@@ -80,7 +80,7 @@ export class ReviewDocuments implements vscode.TextDocumentContentProvider, vsco
 }
 
 export function openTimeline(agent: string): Thenable<unknown> {
-  return vscode.window.showTextDocument(requestUri(`timeline-${agent}.txt`, { kind: 'timeline', agent }), { preview: true })
+  return vscode.window.showTextDocument(requestUri(`timeline-${agent.replace('/', '-')}.txt`, { kind: 'timeline', agent }), { preview: true })
 }
 
 export async function openDiff(target: DiffTarget, controller: Controller): Promise<void> {

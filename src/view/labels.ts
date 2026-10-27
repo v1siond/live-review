@@ -8,7 +8,9 @@ export function repoName(root: string): string {
   return relative.startsWith('..') ? root : relative
 }
 
+// The session's own agent is "you" in its session; outside it, the project says which session.
 export function playerTag(player: Player): string {
+  if (player.main) return `you, ${player.session.project}`
   return player.row ? `Row ${player.row.number}` : player.description
 }
 

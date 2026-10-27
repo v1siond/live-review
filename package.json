@@ -1,8 +1,8 @@
 {
   "name": "live-review",
   "displayName": "Live Review",
-  "description": "The repos you pick, the Claude players of the current session and the files each one changed, with a diff per file.",
-  "version": "0.1.0",
+  "description": "The repos you pick, every live Claude session with its players and the files each one changed, with a diff per file, and the workspace notes each session wrote.",
+  "version": "0.2.0",
   "publisher": "visiond",
   "private": true,
   "license": "UNLICENSED",
@@ -36,8 +36,8 @@
           "name": "Repos"
         },
         {
-          "id": "liveReview.players",
-          "name": "Players"
+          "id": "liveReview.sessions",
+          "name": "Sessions"
         },
         {
           "id": "liveReview.changes",
@@ -77,14 +77,19 @@
         "icon": "$(close)"
       },
       {
-        "command": "liveReview.pickSession",
-        "title": "Pick the Claude session",
-        "icon": "$(history)"
-      },
-      {
         "command": "liveReview.clearFinished",
         "title": "Clear finished players",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "liveReview.removeSession",
+        "title": "Remove the session and its players",
+        "icon": "$(close)"
+      },
+      {
+        "command": "liveReview.removePlayer",
+        "title": "Remove the player",
+        "icon": "$(close)"
       },
       {
         "command": "liveReview.openTimeline",
@@ -111,16 +116,6 @@
           "command": "liveReview.refresh",
           "when": "view == liveReview.repos",
           "group": "navigation@3"
-        },
-        {
-          "command": "liveReview.pickSession",
-          "when": "view == liveReview.players",
-          "group": "navigation@1"
-        },
-        {
-          "command": "liveReview.clearFinished",
-          "when": "view == liveReview.players",
-          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -138,6 +133,21 @@
           "command": "liveReview.removeRepo",
           "when": "view == liveReview.repos && viewItem =~ /^repo\\./",
           "group": "inline@2"
+        },
+        {
+          "command": "liveReview.clearFinished",
+          "when": "view == liveReview.sessions && viewItem == session",
+          "group": "inline@1"
+        },
+        {
+          "command": "liveReview.removeSession",
+          "when": "view == liveReview.sessions && viewItem == session",
+          "group": "inline@2"
+        },
+        {
+          "command": "liveReview.removePlayer",
+          "when": "view == liveReview.sessions && viewItem == player",
+          "group": "inline@1"
         }
       ],
       "commandPalette": [
@@ -160,21 +170,28 @@
         {
           "command": "liveReview.openDiff",
           "when": "false"
+        },
+        {
+          "command": "liveReview.clearFinished",
+          "when": "false"
+        },
+        {
+          "command": "liveReview.removeSession",
+          "when": "false"
+        },
+        {
+          "command": "liveReview.removePlayer",
+          "when": "false"
         }
       ]
     },
     "configuration": {
       "title": "Live Review",
       "properties": {
-        "liveReview.recordFiles": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": [
-            "~/projects/REDACTED/.claude-workspace/REDACTEDORCHESTRA.md"
-          ],
-          "description": "Files whose table rows name a player's row and job: the line \"| <status> | <row number> | <ticket> |\"."
+        "liveReview.workspaceRoot": {
+          "type": "string",
+          "default": "~/projects/REDACTED/.claude-workspace",
+          "description": "The folder that holds one notes folder per project, outside every repo. A session's Workspace files are the files saved since it started in the folders its Write and Edit calls touched here, and a player's row and job come from the ORCHESTRA.md of those folders."
         }
       }
     }

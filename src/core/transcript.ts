@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 
 export type ToolCall = {
   id: string
@@ -16,6 +17,7 @@ type LastAssistant = 'none' | 'text' | 'tool'
 type Line = Record<string, unknown>
 type Block = { type?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string }
 
+const CHUNK_BYTES = 8 * 1024 * 1024
 const NOTIFIED_TOOL_USE = /<tool-use-id>([^<]+)<\/tool-use-id>/
 
 // A transcript only grows, so each read parses the bytes appended since the last one. The
@@ -26,6 +28,7 @@ export class TranscriptCursor {
   private readonly byId = new Map<string, ToolCall>()
   private offset = 0
   private partial = ''
+  private readonly decoder = new StringDecoder('utf8')
 
   private readonly handlers: Record<string, (line: Line) => void> = {
     assistant: (line) => this.onAssistant(line),
@@ -40,14 +43,23 @@ export class TranscriptCursor {
     if (!handle) return
     try {
       const { size } = await handle.stat()
-      if (size <= this.offset) return
-      const buffer = Buffer.alloc(size - this.offset)
-      await handle.read(buffer, 0, buffer.length, this.offset)
-      this.offset = size
-      this.consume(buffer.toString('utf8'))
+      let reading = true
+      while (reading && this.offset < size) reading = await this.readChunk(handle, Math.min(CHUNK_BYTES, size - this.offset))
     } finally {
       await handle.close()
     }
+  }
+
+  // A main session transcript reaches hundreds of MB; reading it in fixed chunks keeps the first
+  // pass from holding the whole file as one buffer and one string. A chunk can end inside a
+  // multi-byte character, so the decoder carries the cut bytes to the next one. False when the
+  // file came back shorter than its stat said, so the loop never spins on a truncated file.
+  private async readChunk(handle: fs.FileHandle, length: number): Promise<boolean> {
+    const buffer = Buffer.alloc(length)
+    const { bytesRead } = await handle.read(buffer, 0, length, this.offset)
+    this.offset += bytesRead
+    this.consume(this.decoder.write(buffer.subarray(0, bytesRead)))
+    return bytesRead > 0
   }
 
   private consume(text: string): void {

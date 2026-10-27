@@ -16,6 +16,9 @@ export type Attribution = {
   // it read them (sed, grep, git diff) or someone else wrote them.
   namedOnly: Map<string, NamedOnly>
   hunks: Map<string, Hunk[]>
+  // When the player last changed a file (0 for never): the start of its last Write or Edit call,
+  // or the save time of the last file a Bash call of its own wrote.
+  lastChange: number
 }
 
 export type AttributionContext = {
@@ -46,23 +49,30 @@ const fileTools: Record<string, FileTool> = {
   }),
 }
 
+// The file a Write, Edit or MultiEdit call names; null for every other tool.
+export function changedFileOf(call: ToolCall): string | null {
+  const fileTool = fileTools[call.name]
+  return fileTool ? fileTool(call.input).file : null
+}
+
 function hunkOf(edit: Record<string, unknown>): Hunk {
   return { before: String(edit.old_string ?? ''), after: String(edit.new_string ?? '') }
 }
 
 export async function attributeAgent(calls: ToolCall[], context: AttributionContext): Promise<Attribution> {
-  const attribution: Attribution = { files: new Map(), namedOnly: new Map(), hunks: new Map() }
+  const attribution: Attribution = { files: new Map(), namedOnly: new Map(), hunks: new Map(), lastChange: 0 }
   for (const call of calls) {
     const fileTool = fileTools[call.name]
-    if (fileTool) await creditFileTool(fileTool(call.input), attribution, context)
+    if (fileTool) await creditFileTool(fileTool(call.input), call.start, attribution, context)
     if (call.name === 'Bash') await creditBash(call, attribution, context)
   }
   attribution.files.forEach((_credit, file) => attribution.namedOnly.delete(file))
   return attribution
 }
 
-async function creditFileTool(change: { file: string; hunks: Hunk[] }, attribution: Attribution, context: AttributionContext) {
+async function creditFileTool(change: { file: string; hunks: Hunk[] }, start: number, attribution: Attribution, context: AttributionContext) {
   const repo = await context.roots.rootOfFile(change.file)
+  attribution.lastChange = Math.max(attribution.lastChange, start)
   attribution.files.set(change.file, { file: change.file, repo, how: 'edit' })
   attribution.hunks.set(change.file, [...(attribution.hunks.get(change.file) ?? []), ...change.hunks])
 }
@@ -81,10 +91,14 @@ async function creditBashInRepo(call: ToolCall, command: string, repo: string, a
   for (const relative of changedPaths(state).keys()) {
     if (!namesFile(command, relative)) continue
     const file = path.join(repo, relative)
-    if (attribution.files.has(file)) continue
     const mtime = await context.mtimeOf(file)
-    if (mtime >= from && mtime <= to) attribution.files.set(file, { file, repo, how: 'bash' })
-    if (!attribution.files.has(file)) attribution.namedOnly.set(file, { file, repo })
+    const credited = attribution.files.has(file)
+    if (mtime < from || mtime > to) {
+      if (!credited) attribution.namedOnly.set(file, { file, repo })
+      continue
+    }
+    attribution.lastChange = Math.max(attribution.lastChange, mtime)
+    if (!credited) attribution.files.set(file, { file, repo, how: 'bash' })
   }
 }
 
@@ -93,6 +107,7 @@ async function creditBashInRepo(call: ToolCall, command: string, repo: string, a
 // commit made inside the call whose subject the command carries.
 function creditOwnCommits(command: string, repo: string, state: RepoState, [from, to]: [number, number], attribution: Attribution) {
   const own = state.unpushed.filter((commit) => commit.time >= from && commit.time <= to && command.includes(commit.subject))
+  own.forEach((commit) => (attribution.lastChange = Math.max(attribution.lastChange, commit.time)))
   for (const file of own.flatMap((commit) => commit.files).map((relative) => path.join(repo, relative))) {
     if (!attribution.files.has(file)) attribution.files.set(file, { file, repo, how: 'bash' })
   }

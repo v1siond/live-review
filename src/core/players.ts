@@ -2,10 +2,11 @@ import * as path from 'node:path'
 import { describeCall } from './actions'
 import { attributeAgent, type Credit, type Hunk } from './attribution'
 import { modifiedAt } from './files'
-import { findRow, jobOf, rowNumber, type RecordRow } from './orchestra'
+import { findRow, jobOf, readRecords, rowNumber, type RecordRow } from './orchestra'
 import { changedPaths, type RepoRootCache, type RepoState } from './repoState'
 import { listAgents, readMeta, type SessionRef } from './sessions'
 import { TranscriptCursor } from './transcript'
+import { workspaceFolders } from './workspace'
 
 export type PlayerState = 'working' | 'waiting' | 'done'
 
@@ -18,7 +19,11 @@ export type PlayerFile = Credit & { relative: string | null; status: FileStatus 
 export type TimelineEntry = { time: number; words: string }
 
 export type Player = {
+  // Unique across sessions: "<session id>/<agent id>".
+  key: string
   id: string
+  session: SessionRef
+  main: boolean
   description: string
   label: string
   row: RecordRow | null
@@ -28,7 +33,10 @@ export type Player = {
   files: PlayerFile[]
   namedOnly: PlayerFile[]
   hunks: Map<string, Hunk[]>
+  lastChange: number
 }
+
+type SessionRead = { players: Player[]; workspaceFolders: string[] }
 
 export type GitView = { roots: RepoRootCache; stateOf: (root: string) => Promise<RepoState> }
 
@@ -37,6 +45,14 @@ export type GitView = { roots: RepoRootCache; stateOf: (root: string) => Promise
 export type History = Map<string, Set<string>>
 
 const QUIET_MS = 10 * 60 * 1000
+
+// The session's own agent, the one he talks to, listed beside its players.
+const MAIN_AGENT = 'main'
+const MAIN_DESCRIPTION = 'you'
+// The table of tickets each workspace folder keeps; a player's "Row <n>" is looked up in it.
+const RECORD_FILE = 'ORCHESTRA.md'
+
+type Source = { id: string; transcript: string; description: () => Promise<string> }
 
 // The transcript is the only witness: a player that ended wrote a final text with no tool
 // call after it, and one appended in the last 10 minutes is still running. A player that is
@@ -52,16 +68,35 @@ export class SessionReader {
 
   constructor(readonly session: SessionRef) {}
 
-  async readPlayers(records: string[], history: History, git: GitView, now: number): Promise<Player[]> {
-    const agents = await listAgents(this.session)
-    return Promise.all(
-      agents.map(async (agent) => {
-        const cursor = this.cursorFor(agent.id, agent.transcript)
-        await cursor.readNew()
-        const [meta, lastWrite] = await Promise.all([readMeta(agent.meta), modifiedAt(agent.transcript)])
-        return buildPlayer({ id: agent.id, description: meta.description, cursor, lastWrite, records, history, git, now })
+  // The transcripts are read one after the other: a first read of a main transcript of hundreds of
+  // MB beside its players' at once would hold all of them in memory together.
+  async read(workspaceRoot: string, history: History, git: GitView, now: number): Promise<SessionRead> {
+    const sources = await this.sources()
+    const cursors: TranscriptCursor[] = []
+    for (const source of sources) cursors.push(await this.readSource(source))
+    const folders = await workspaceFolders(cursors.flatMap((cursor) => cursor.calls), workspaceRoot)
+    const records = await readRecords(folders.map((folder) => path.join(folder, RECORD_FILE)))
+    const players = await Promise.all(
+      sources.map(async (source, index) => {
+        const cursor = cursors[index]
+        const [description, lastWrite] = await Promise.all([source.description(), modifiedAt(source.transcript)])
+        return buildPlayer({ session: this.session, id: source.id, description, cursor, lastWrite, records, history, git, now })
       }),
     )
+    return { players, workspaceFolders: folders }
+  }
+
+  private async sources(): Promise<Source[]> {
+    const agents = await listAgents(this.session)
+    const main: Source = { id: MAIN_AGENT, transcript: this.session.transcript, description: async () => MAIN_DESCRIPTION }
+    const players = agents.map((agent) => ({ id: agent.id, transcript: agent.transcript, description: async () => (await readMeta(agent.meta)).description }))
+    return [main, ...players]
+  }
+
+  private async readSource(source: Source): Promise<TranscriptCursor> {
+    const cursor = this.cursorFor(source.id, source.transcript)
+    await cursor.readNew()
+    return cursor
   }
 
   private cursorFor(id: string, file: string): TranscriptCursor {
@@ -74,6 +109,7 @@ export class SessionReader {
 }
 
 type PlayerInput = {
+  session: SessionRef
   id: string
   description: string
   cursor: TranscriptCursor
@@ -85,7 +121,7 @@ type PlayerInput = {
 }
 
 async function buildPlayer(input: PlayerInput): Promise<Player> {
-  const { id, description, cursor, git, now } = input
+  const { session, id, description, cursor, git, now } = input
   const attribution = await attributeAgent(cursor.calls, { ...git, mtimeOf: modifiedAt, now })
   await addHistory(attribution.files, input.history.get(id), git.roots)
   const number = rowNumber(description)
@@ -93,7 +129,10 @@ async function buildPlayer(input: PlayerInput): Promise<Player> {
   const verdict = verdictOf(cursor.lastAssistant, input.lastWrite, now)
   const timeline = cursor.calls.map((call) => ({ time: call.start, words: describeCall(call) }))
   return {
+    key: `${session.id}/${id}`,
     id,
+    session,
+    main: id === MAIN_AGENT,
     description,
     label: labelOf(description, row),
     row,
@@ -103,6 +142,7 @@ async function buildPlayer(input: PlayerInput): Promise<Player> {
     files: await withStatus([...attribution.files.values()], git),
     namedOnly: await withStatus([...attribution.namedOnly.values()].map((named) => ({ ...named, how: 'bash' as const })), git),
     hunks: attribution.hunks,
+    lastChange: attribution.lastChange,
   }
 }
 
