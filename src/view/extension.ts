@@ -17,9 +17,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const controller = new Controller(store, log)
   const documents = new ReviewDocuments(controller)
   const repos = new ReposView(controller, store)
-  const reposTree = vscode.window.createTreeView('liveReview.repos', { treeDataProvider: repos, manageCheckboxStateManually: true })
-  const sessionsTree = vscode.window.createTreeView('liveReview.sessions', { treeDataProvider: new SessionsView(controller) })
-  const changesTree = vscode.window.createTreeView('liveReview.changes', { treeDataProvider: new ChangesView(controller, store) })
+  const reposTree = vscode.window.createTreeView('liveReview.repos', { treeDataProvider: repos, manageCheckboxStateManually: true, showCollapseAll: true })
+  const sessionsTree = vscode.window.createTreeView('liveReview.sessions', { treeDataProvider: new SessionsView(controller), showCollapseAll: true })
+  const changesTree = vscode.window.createTreeView('liveReview.changes', { treeDataProvider: new ChangesView(controller, store), showCollapseAll: true })
   const trees = [reposTree, sessionsTree, changesTree]
 
   context.subscriptions.push(

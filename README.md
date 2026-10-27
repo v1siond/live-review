@@ -4,7 +4,7 @@ A VS Code panel that shows every Claude session running on this machine, what ea
 
 ## What it shows
 
-The Live Review icon in the left bar opens three sections.
+The Live Review icon in the left bar opens three sections. Each section has a Collapse All button in its title bar that folds only that section.
 
 **Repos.** Every clone under `~/projects` (3 levels deep), grouped by the git system its `origin` points at. The systems come from the `Host` and `HostName` lines of `~/.ssh/config`: every alias on github.com, gitlab.* or bitbucket.org, plus github.com. A clone that matches none sits under Other. Tick a repo to watch it. Per repo we see the branch, the files changed now, the commits not pushed yet and how far behind the upstream it is. A repo a player of a listed session edited is marked with its row and sorts first; a repo with nothing to review is greyed and sorts last. The `+` adds a folder the scan missed, the pin keeps a repo at the top of its system, the `x` takes it off the list. The picks are saved.
 
@@ -33,7 +33,7 @@ Git only runs read commands, plus `git fetch` on the Fetch button and every 10 m
 ```bash
 cd ~/projects/claude/vscode-live-review && npm install && npm run compile
 npx @vscode/vsce package --allow-missing-repository
-~/.vscode-server/bin/*/bin/code-server --install-extension live-review-0.2.0.vsix --force
+~/.vscode-server/bin/*/bin/code-server --install-extension live-review-0.2.1.vsix --force
 ```
 
 Reload the VS Code window after the install. `node scripts/probe.mjs [sessionId]` prints what the Sessions section sees, one block per running session (or only the one named), from the terminal.

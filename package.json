@@ -2,7 +2,7 @@
   "name": "live-review",
   "displayName": "Live Review",
   "description": "The repos you pick, every live Claude session with its players and the files each one changed, with a diff per file, and the workspace notes each session wrote.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "visiond",
   "private": true,
   "license": "UNLICENSED",
