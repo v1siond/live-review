@@ -1,0 +1,192 @@
+{
+  "name": "live-review",
+  "displayName": "Live Review",
+  "description": "The repos you pick, the Claude players of the current session and the files each one changed, with a diff per file.",
+  "version": "0.1.0",
+  "publisher": "visiond",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "categories": [
+    "SCM Providers"
+  ],
+  "main": "./out/view/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "liveReview",
+          "title": "Live Review",
+          "icon": "media/live-review.svg"
+        }
+      ]
+    },
+    "views": {
+      "liveReview": [
+        {
+          "id": "liveReview.repos",
+          "name": "Repos"
+        },
+        {
+          "id": "liveReview.players",
+          "name": "Players"
+        },
+        {
+          "id": "liveReview.changes",
+          "name": "Changes"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "liveReview.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "liveReview.fetch",
+        "title": "Fetch picked repos",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "liveReview.addRepo",
+        "title": "Add a repo folder",
+        "icon": "$(add)"
+      },
+      {
+        "command": "liveReview.pinRepo",
+        "title": "Pin to the top of its system",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "liveReview.unpinRepo",
+        "title": "Unpin",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "liveReview.removeRepo",
+        "title": "Remove from the list",
+        "icon": "$(close)"
+      },
+      {
+        "command": "liveReview.pickSession",
+        "title": "Pick the Claude session",
+        "icon": "$(history)"
+      },
+      {
+        "command": "liveReview.clearFinished",
+        "title": "Clear finished players",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "liveReview.openTimeline",
+        "title": "Open the player's timeline"
+      },
+      {
+        "command": "liveReview.openDiff",
+        "title": "Open the diff"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "liveReview.addRepo",
+          "when": "view == liveReview.repos",
+          "group": "navigation@1"
+        },
+        {
+          "command": "liveReview.fetch",
+          "when": "view == liveReview.repos",
+          "group": "navigation@2"
+        },
+        {
+          "command": "liveReview.refresh",
+          "when": "view == liveReview.repos",
+          "group": "navigation@3"
+        },
+        {
+          "command": "liveReview.pickSession",
+          "when": "view == liveReview.players",
+          "group": "navigation@1"
+        },
+        {
+          "command": "liveReview.clearFinished",
+          "when": "view == liveReview.players",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "liveReview.pinRepo",
+          "when": "view == liveReview.repos && viewItem =~ /^repo\\.unpinned/",
+          "group": "inline@1"
+        },
+        {
+          "command": "liveReview.unpinRepo",
+          "when": "view == liveReview.repos && viewItem =~ /^repo\\.pinned/",
+          "group": "inline@1"
+        },
+        {
+          "command": "liveReview.removeRepo",
+          "when": "view == liveReview.repos && viewItem =~ /^repo\\./",
+          "group": "inline@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "liveReview.pinRepo",
+          "when": "false"
+        },
+        {
+          "command": "liveReview.unpinRepo",
+          "when": "false"
+        },
+        {
+          "command": "liveReview.removeRepo",
+          "when": "false"
+        },
+        {
+          "command": "liveReview.openTimeline",
+          "when": "false"
+        },
+        {
+          "command": "liveReview.openDiff",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Live Review",
+      "properties": {
+        "liveReview.recordFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "~/projects/REDACTED/.claude-workspace/REDACTEDORCHESTRA.md"
+          ],
+          "description": "Files whose table rows name a player's row and job: the line \"| <status> | <row number> | <ticket> |\"."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.100.0",
+    "@vscode/vsce": "4.0.0",
+    "typescript": "5.9.3"
+  }
+}
