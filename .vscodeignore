@@ -3,3 +3,4 @@ scripts/**
 tsconfig.json
 .gitignore
 **/*.map
+media/*.png
