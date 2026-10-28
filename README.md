@@ -4,6 +4,10 @@ Live Review is a VS Code panel that shows every Claude Code session running on y
 
 It only reads: the session transcripts Claude Code already writes and your local clones. It sends nothing anywhere and never writes to a repo.
 
+![The Live Review panel in VS Code. On the left, Repos lists the repo demo/shop under github.com, ticked and compared to origin/main, with its changed files and one commit. Sessions lists one session with "you" and one player, Featured products in the grid, each with the files it changed. Changes lists the three changed files of demo/shop, each tagged with the player that wrote it. On the right, hero.tsx opens side by side, origin/main against the working tree, with the added lines in green.](media/live-review-panel.png)
+
+*One Claude Code session working in `demo/shop`: the repo is ticked in Repos and compared to `origin/main`, Sessions shows who changed which file, and clicking `hero.tsx` in Changes opened its diff.*
+
 ## How it fits together
 
 ```mermaid
@@ -34,13 +38,13 @@ A session is one `claude` process you started in a terminal. A player is an agen
 
 ## Requirements
 
-| What | Why |
-|---|---|
-| Linux, or Windows with WSL (VS Code connected to the WSL side) | A session counts as running while its process is alive, and that is read from `/proc/<pid>/stat`. macOS and plain Windows have no `/proc`, so the Sessions section stays empty there (Repos and Changes still work). |
-| VS Code 1.100 or newer | The extension declares `^1.100.0` as the VS Code version it runs on. |
-| Claude Code | The sessions, players and file credits come from the files Claude Code writes under `~/.claude`. |
-| git on the `PATH` | Every repo fact comes from git. |
-| Node.js 18 or newer | Only to build from source or to run the probe script. |
+| What | Why | Check it |
+|---|---|---|
+| Linux, or Windows with WSL (VS Code connected to the WSL side) | A session counts as running while its process is alive, and that is read from `/proc/<pid>/stat`. macOS and plain Windows have no `/proc`, so the Sessions section stays empty there (Repos and Changes still work). | `ls /proc/self/stat` prints the path. |
+| VS Code 1.100 or newer | The extension declares `^1.100.0` as the VS Code version it runs on; an older VS Code refuses the install. | `code --version`: the first line is 1.100.0 or higher. |
+| git on the `PATH` of the machine the extension runs on | Every repo fact comes from git. Without it every repo sits under **Other** with `no commits, 0 changed`. | `git --version` prints a version. |
+| Claude Code, on the same machine and user as VS Code's extension host | Only for Sessions and the file credits in Changes: they come from the files Claude Code writes under `~/.claude`. Repos and Changes work without it. | `claude --version` prints a version, and with a `claude` open in a terminal, `ls ~/.claude/sessions` lists a `<pid>.json` for it. |
+| Node.js 22 or newer | Only to build from source or to run the probe script (`@vscode/vsce` 4 needs Node.js 22). | `node --version` prints v22 or higher. |
 
 ## Install
 
@@ -56,7 +60,7 @@ A session is one `claude` process you started in a terminal. A player is an agen
    Or from VS Code: open the Extensions view (`Ctrl+Shift+X`), click the `...` menu at the top of the view, choose **Install from VSIX...** and pick the file.
 3. Run **Developer: Reload Window** from the Command Palette (`Ctrl+Shift+P`).
 
-On WSL, connect VS Code to WSL first and install it there: the extension runs next to your repos, on the WSL side. See [Troubleshooting](#troubleshooting).
+Where to run that command depends on your setup: see [Your environment](#your-environment) below.
 
 ### From source
 
@@ -71,13 +75,50 @@ code --install-extension live-review-0.3.0.vsix --force
 
 Then reload the window.
 
-## Quick start
+### Your environment
 
-1. Click the Live Review icon in the left bar (a branch with three dots). The panel opens with three sections: Repos, Sessions and Changes.
+Live Review runs in VS Code's extension host on the side that holds your workspace (with Remote WSL, that is the WSL distro). Three things must sit on that same side, under the same user: the extension, your git clones, and the `~/.claude` folder Claude Code writes, which means `claude` runs there too.
+
+#### Linux
+
+1. Install with `code --install-extension live-review-0.3.0.vsix` in your normal terminal.
+2. Run `claude` as the same user that runs VS Code. Its sessions land in that user's `~/.claude`.
+3. Keep your clones under `~/projects`, or set [`liveReview.projectsRoot`](#settings) to where they are.
+
+#### Windows with WSL
+
+1. Install the WSL extension in VS Code, open a WSL terminal, `cd` into your projects folder and run `code .`. The status bar's left corner reads `WSL: <distro>`.
+2. Install Live Review from that WSL terminal with `code --install-extension live-review-0.3.0.vsix`, or with **Install from VSIX...** while connected. The Extensions view lists it under **WSL: &lt;distro&gt; - Installed**.
+3. Run `claude` inside the same WSL distro. Its sessions land in your WSL user's `~/.claude`. A `claude` started from PowerShell or cmd writes to `C:\Users\<you>\.claude`, which the extension never reads.
+4. Keep your clones inside the WSL file system (`~/projects` by default).
+
+#### macOS
+
+Install it the same way as on Linux (run **Shell Command: Install 'code' command in PATH** from the Command Palette first if `code` is not found in your terminal). Repos, Changes and the diffs work. Sessions is not supported: a session counts as running only when its `/proc/<pid>/stat` is readable, and macOS has no `/proc`, so Sessions stays empty and files in Changes are tagged `by hand`.
+
+#### Windows without WSL
+
+Install it from VS Code with **Install from VSIX...**, and have git for Windows on the `PATH`. Repos, Changes and the diffs work. Sessions is not supported, for the same reason as macOS: there is no `/proc`. Set `liveReview.projectsRoot` with forward slashes after the `~` (`~/projects`) or as a full path (`C:/Users/<you>/projects`); a `~` followed by a backslash is not read as your home folder.
+
+## First run
+
+The [screenshot at the top](#live-review) is what these steps end with.
+
+1. Click the Live Review icon in the left bar (a branch with three dots). The panel opens with three sections: Repos, Sessions and Changes. Repos lists your clones under their git system (`github.com 1 repos`, then each repo with an empty checkbox); Sessions and Changes are empty until a session runs and a repo is ticked.
 2. If your clones live somewhere other than `~/projects`, open Settings (`Ctrl+,`), search for `liveReview.projectsRoot` and set your folder. The Repos section rescans right away.
-3. In Repos, tick the checkbox of each repo you want to watch. Ticked repos are read every 4 seconds while the panel is visible.
+3. In Repos, tick the checkbox of each repo you want to watch. Ticked repos are read every 4 seconds while the panel is visible, and they appear in Changes with every changed file.
 4. Start `claude` in a terminal and give it work. Within 30 seconds the session shows in Sessions, with "you" and each player it starts, and under each one the files it changed.
-5. Click any file to open its diff. To review a feature branch against `main`, click the compare icon on the repo in Repos and pick `main` (or `origin/main`).
+5. To review a feature branch against `main`, hover the repo in Repos, click the compare icon (`git-compare`, the first of its three icons), type `origin/main` (or `main`) and press `Enter`. The repo's summary now starts with `vs origin/main`, for example `vs origin/main, feature/hero-banner, 3 changed, 1 ahead, 0 behind`.
+6. Click any file in Repos, Sessions or Changes. Its diff opens side by side, titled `<file> (origin/main vs working tree)` in compare mode.
+
+### Check it works
+
+1. In a terminal on the side where the extension runs, `code --list-extensions --show-versions | grep live-review` prints `v1siond.live-review@0.3.0`.
+2. Repos shows at least one git system with `N repos` and N above 0. A lone `github.com 0 repos` means `liveReview.projectsRoot` points at the wrong folder.
+3. With a `claude` open in a terminal, `ls ~/.claude/sessions` lists a `<pid>.json` file, and Sessions lists that session within 30 seconds.
+4. **View > Output**, pick **Live Review** in the list on the right: no line holds `failed:`. Each problem the extension hits while reading sessions or repos is logged there, and so is each `git fetch` that fails.
+
+If a step does not show what it says, find the row in [Troubleshooting](#troubleshooting).
 
 ## The three sections
 
@@ -121,7 +162,7 @@ One node per Claude Code session running now, in any folder, newest first, named
 | "you" and each player | Green spinning `sync` while working, yellow `watch` while waiting, grey `pass` when done | Its description (or its row and job, see [Rows and jobs](#rows-and-jobs-optional)), its state and its last action ("editing api.ts", "running the tests"). Click it to open its timeline: every tool call with its time. |
 | A repo under a player | `repo`, or `folder` for "outside git" | The repos the player changed files in, with "N files". |
 | A file under a player | The file type's icon | Its folder, its status (`uncommitted`, `unpushed`, `clean` or `outside git`) and "also written by another player" when it is shared. Click for the diff: a file the player changed with Edit that another player also wrote shows only this player's own edits. |
-| Workspace files | `notebook` | Only when `liveReview.workspaceRoot` is set: every file saved under it since the session started, newest first. |
+| Workspace files | `notebook` | Every file saved under `liveReview.workspaceRoot` since the session started, newest first. Listed on every session; it reads `0 files since the session started` while the setting is empty. |
 
 The states:
 
@@ -267,8 +308,13 @@ The running sessions come from Claude Code's registry, `~/.claude/sessions/<pid>
 | Problem | Cause | Fix |
 |---|---|---|
 | No sessions on macOS or Windows | Liveness is read from `/proc/<pid>/stat`, which only Linux has. | Run Claude Code and VS Code inside WSL on Windows. On macOS the Repos and Changes sections work; Sessions stays empty. |
-| No sessions listed on Linux or WSL | The session is headless (`claude -p`, the SDK) or a background job, or it started less than 30 seconds ago, or VS Code runs on a different machine or WSL distro than Claude Code. | Start `claude` in a terminal on the same side as VS Code and wait 30 seconds. Look in **View > Output > Live Review** for errors. |
-| A repo is missing from Repos | It is outside `liveReview.projectsRoot`, deeper than `liveReview.scanDepth`, it is a worktree or submodule (a `.git` file instead of a folder), or you removed it with `x`. | Change the setting, or click `+` in the Repos title bar and pick its folder. |
+| No sessions listed on Linux or WSL | The session is headless (`claude -p`, the SDK) or a background job, or it started less than 30 seconds ago, or VS Code runs on a different machine, WSL distro or user than Claude Code. | Start `claude` in a terminal on the same side as VS Code and wait 30 seconds. In that same terminal, `ls ~/.claude/sessions` must list a `<pid>.json`; an empty or missing folder means `claude` runs under another home folder. Look in **View > Output > Live Review** for errors. |
+| Sessions empty over Remote SSH | The extension runs on the remote host, so it reads the remote's `~/.claude` and `/proc`. A `claude` running on your own computer is never seen. | Install it while connected (**Install in SSH: &lt;host&gt;** in the Extensions view), run `claude` in a terminal on the remote host (VS Code's terminal already is), and use a Linux remote. |
+| Sessions empty in a dev container | The extension runs inside the container, which reads the container's `~/.claude` and sees only the container's processes. A `claude` running on the host is never seen. | Install it in the container (**Install in Dev Container** in the Extensions view), run `claude` in a terminal inside the container, and have git in the container image. |
+| Every repo sits under **Other** and reads `no commits, 0 changed, 0 unpushed` | git is not on the `PATH` of the extension host, so no git call works. | Install git on the side where the extension runs, check `git --version` there, and run **Developer: Reload Window**. |
+| Repos shows only `github.com 0 repos` | `liveReview.projectsRoot` points at a folder that does not exist or holds no clone within `liveReview.scanDepth` levels. On Windows, a `~` followed by a backslash is not read as your home folder. | Set `liveReview.projectsRoot` to the folder that holds your clones, as a full path or as `~/<folder>`. Repos rescans at once. |
+| A repo is missing from Repos | It is outside `liveReview.projectsRoot`, deeper than `liveReview.scanDepth` (the default `3` finds `projects/group/repo`; `projects/a/b/repo` needs `4`), it is a worktree or submodule (a `.git` file instead of a folder), or you removed it with `x`. | Change the setting, or click `+` in the Repos title bar and pick its folder. |
+| A repo sits under **Other** | Its `origin` points at a host that is not github.com, a host named `gitlab.<something>` or bitbucket.org, and no `Host` alias in `~/.ssh/config` has one of those as its `HostName`; or the repo has no `origin` remote. | `git -C <repo> remote get-url origin` shows the URL. For an ssh alias, add `HostName gitlab.example.com` (your real host) under its `Host` line in `~/.ssh/config`; Repos rereads the file when it changes. A repo with no `origin`, or one on a host named otherwise, stays under Other and works the same. |
 | A file is shown "by hand" | No transcript of a listed session wrote it: you saved it, a session you removed or that is no longer running did, or a Bash call wrote it without naming it in its command. | Expected for your own edits. For an agent's file, check the agent's session is listed in Sessions. |
 | The diff shows the wrong base | The repo has a compare pick or a default branch you did not expect, or a dirty file in the HEAD comparison is compared to HEAD (only committed files use the upstream). | Read the repo's summary: `vs <branch>` names the base. Use the compare icon to pick HEAD or another branch. |
 | Installed on Remote WSL but nothing shows | The VSIX went into the Windows side of VS Code. | Connect VS Code to WSL, then install from the WSL terminal (`code --install-extension live-review-0.3.0.vsix`) or with **Install from VSIX...** while connected, and reload the window. |

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- README: a screenshot of the panel on a demo repo, a check per requirement, where to install the extension and where `~/.claude` must be on Linux, WSL, macOS and Windows, a First run walk through with a Check it works list, and Troubleshooting rows for a missing git, an empty or wrong projects folder, a repo under Other, Remote SSH and dev containers.
+- README: building from source needs Node.js 22 (what `@vscode/vsce` 4 asks for), and the Workspace files node is listed on every session.
+
 ## 0.3.0
 
 Upgrading from 0.2.x: the publisher is now `v1siond`, so VS Code installs 0.3.0 as a new extension with empty saved state. Re-tick your repos after upgrading from 0.2.x (and pin them again), then uninstall the 0.2.x Live Review from the Extensions view (`code --list-extensions | grep live-review` shows both ids).
