@@ -157,7 +157,7 @@ async function countSides(root: string, compareRef: string): Promise<{ ahead: nu
 }
 
 async function readCommittedDiff(root: string, base: string): Promise<ChangedFile[]> {
-  const diff = await runGit(root, ['diff', '--name-status', '-z', base, 'HEAD'])
+  const diff = await runGit(root, ['diff', '--no-ext-diff', '--name-status', '-z', base, 'HEAD'])
   if (!diff.ok) return []
   return parseNameStatus(diff.stdout)
 }

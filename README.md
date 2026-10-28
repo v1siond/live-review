@@ -299,6 +299,7 @@ The running sessions come from Claude Code's registry, `~/.claude/sessions/<pid>
 
 - Git runs only read commands (`status`, `log`, `diff`, `show`, `rev-parse`, `rev-list`, `merge-base`, `for-each-ref`, `branch --show-current`, `remote get-url`), plus `git fetch` when you click Fetch and every 10 minutes for the ticked repos.
 - Every git call passes `--no-optional-locks`, so it never takes the index lock while an agent commits in the same repo, and `GIT_TERMINAL_PROMPT=0`, so a fetch that needs a password fails instead of waiting.
+- Every git call also passes `-c core.fsmonitor=false -c diff.external= -c core.hooksPath=/dev/null`, and the diff passes `--no-ext-diff`, so a repo's own `.git/config` cannot make the panel run a command when it reads that repo. A fetch still uses the repo's `core.sshCommand` and your ssh config, so tick only repos whose config you trust.
 - From `~/.ssh/config` it reads only the `Host` and `HostName` lines. Keys are never opened.
 - It reads `~/.claude/sessions`, `~/.claude/projects`, `/proc/<pid>/stat` and, when set, `liveReview.workspaceRoot`.
 - It sends nothing anywhere: no telemetry, no network call besides `git fetch`.
