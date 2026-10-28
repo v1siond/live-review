@@ -240,12 +240,12 @@ Open the pick on the repo and choose **Use the default (liveReview.defaultCompar
 
 ## Settings
 
-Open Settings (`Ctrl+,`) and search for `liveReview`, or edit `settings.json`. Every change applies at once.
+Open Settings (`Ctrl+,`) and search for `liveReview`, or edit your user `settings.json`. Every change applies at once. The four settings are machine settings: a repo's own `.vscode/settings.json` cannot set them, so a folder you open cannot point the scan somewhere else. The extension stays off in Restricted Mode, until you trust the folder.
 
 | Setting | Type | Default | What it does | Example |
 |---|---|---|---|---|
 | `liveReview.projectsRoot` | string | `~/projects` | The folder scanned for git clones. A leading `~` is your home folder. Sessions are named relative to it, and a Bash call of a player only adds repos inside it. | `"~/code"` |
-| `liveReview.scanDepth` | number | `3` | How many folder levels under `projectsRoot` are searched for a `.git` folder. `3` finds `projects/group/repo`. A higher number finds deeper clones and takes longer on a big tree. | `4` |
+| `liveReview.scanDepth` | number | `3` | How many folder levels under `projectsRoot` are searched for a `.git` folder. `3` finds `projects/group/repo`. A higher number finds deeper clones and takes longer on a big tree. The most is `6`. | `4` |
 | `liveReview.workspaceRoot` | string | `""` | Optional. A folder outside every repo that holds one notes folder per project. When set, each session lists its Workspace files, and players get their row and job from the `ORCHESTRA.md` files there. Empty turns both off. | `"~/notes"` |
 | `liveReview.defaultCompareBranch` | string | `""` | The branch every repo is compared to unless you picked something else for it. Used only in repos where the branch exists. Empty compares every repo to HEAD. | `"origin/main"` |
 

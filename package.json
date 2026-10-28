@@ -16,6 +16,11 @@
   "engines": {
     "vscode": "^1.100.0"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
   "extensionKind": [
     "workspace"
   ],
@@ -210,22 +215,27 @@
       "title": "Live Review",
       "properties": {
         "liveReview.projectsRoot": {
+          "scope": "machine",
           "type": "string",
           "default": "~/projects",
           "description": "The folder scanned for git clones. A leading ~ is your home folder. Session names are shown relative to it, and a Bash call only adds repos found inside it."
         },
         "liveReview.scanDepth": {
+          "scope": "machine",
           "type": "number",
           "default": 3,
           "minimum": 1,
+          "maximum": 6,
           "description": "How many folder levels under liveReview.projectsRoot are searched for a .git folder. 3 finds projects/group/repo."
         },
         "liveReview.workspaceRoot": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Optional. A folder outside every repo that holds one notes folder per project. When set, each session lists the files saved there since it started (Workspace files), and a player whose description says \"Row <n>\" gets its row and job from the ORCHESTRA.md of those folders. Empty turns both off."
         },
         "liveReview.defaultCompareBranch": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "A branch every repo is compared to (for example origin/main) unless you picked something else for it with Compare to a branch. A repo where this branch does not exist keeps the HEAD comparison. Empty compares every repo to HEAD."
