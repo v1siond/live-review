@@ -4,6 +4,7 @@
 
 - Security: every git call runs with `core.fsmonitor`, `diff.external` and `core.hooksPath` turned off from the command line, and the diff with `--no-ext-diff`, so a repo under the projects folder whose `.git/config` someone else wrote no longer runs a command when the panel starts and reads it.
 - Security: `liveReview.projectsRoot`, `liveReview.scanDepth`, `liveReview.workspaceRoot` and `liveReview.defaultCompareBranch` are machine settings, so a cloned repo's `.vscode/settings.json` can no longer point the scan at another folder; `scanDepth` stops at 6, and the extension does not run in Restricted Mode.
+- Build: `@azure/msal-node`, pulled in by `@vscode/vsce` for publishing, is pinned to 7.1.0 through `overrides` (GHSA-xcx6-jx8p-x3h5), and `npm audit` finds 0 vulnerabilities. The extension itself ships no dependency.
 - README: a screenshot of the panel on a demo repo, a check per requirement, where to install the extension and where `~/.claude` must be on Linux, WSL, macOS and Windows, a First run walk through with a Check it works list, and Troubleshooting rows for a missing git, an empty or wrong projects folder, a repo under Other, Remote SSH and dev containers.
 - README: building from source needs Node.js 22 (what `@vscode/vsce` 4 asks for), and the Workspace files node is listed on every session.
 
