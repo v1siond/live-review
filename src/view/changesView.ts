@@ -1,16 +1,15 @@
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import type { Player } from '../core/players'
-import { changedPaths } from '../core/repoState'
 import type { Controller } from './controller'
-import { playerTag, repoName, repoSummary, writersByFile } from './labels'
+import { committedWord, playerTag, repoName, repoSummary, writersByFile } from './labels'
 import { fileItem, type FileNode } from './reposView'
 import type { Store } from './store'
 
 type Node = { kind: 'repo'; root: string } | FileNode
 
-// No transcript of a live session credits the file: he saved it himself, or a session that is
-// no longer listed did.
+// No transcript of a live session credits the file: the user saved it, or a session that is no
+// longer listed did.
 const NO_PLAYER = 'by hand'
 
 export class ChangesView implements vscode.TreeDataProvider<Node> {
@@ -36,7 +35,7 @@ export class ChangesView implements vscode.TreeDataProvider<Node> {
 
   getTreeItem(node: Node): vscode.TreeItem {
     if (node.kind === 'file') return fileItem(node, this.tagOf(path.join(node.root, node.relative)))
-    const item = new vscode.TreeItem(repoName(node.root), vscode.TreeItemCollapsibleState.Expanded)
+    const item = new vscode.TreeItem(repoName(node.root, this.controller.model.settings.projectsRoot), vscode.TreeItemCollapsibleState.Expanded)
     item.description = repoSummary(this.controller.model.states.get(node.root))
     item.iconPath = new vscode.ThemeIcon('repo')
     return item
@@ -47,15 +46,14 @@ export class ChangesView implements vscode.TreeDataProvider<Node> {
     return this.controller.model.repos.filter((entry) => picked.has(entry.root)).map((entry) => ({ kind: 'repo', root: entry.root }))
   }
 
-  // Dirty files first with their status, then the files only an unpushed commit holds.
+  // Dirty files first with their status, then the files only a commit holds: unpushed, or in
+  // compare mode committed since the merge base.
   private filesOf(root: string): Node[] {
     const state = this.controller.model.states.get(root)
     if (!state) return []
-    const dirty = new Set(state.uncommitted.map((file) => file.path))
     const uncommitted: FileNode[] = state.uncommitted.map((file) => ({ kind: 'file', root, relative: file.path, status: file.status, committedOnly: false }))
-    const committed: FileNode[] = [...changedPaths(state).keys()]
-      .filter((relative) => !dirty.has(relative))
-      .map((relative) => ({ kind: 'file', root, relative, status: 'unpushed', committedOnly: true }))
+    const word = committedWord(state)
+    const committed: FileNode[] = state.committed.map((file) => ({ kind: 'file', root, relative: file.path, status: word, committedOnly: true }))
     return [...uncommitted, ...committed]
   }
 

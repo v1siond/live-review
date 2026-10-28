@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import { ChangesView } from './changesView'
+import { pickCompareTarget } from './comparePick'
 import { Controller } from './controller'
 import { openDiff, openTimeline, ReviewDocuments, SCHEME, type DiffTarget } from './documents'
 import { ReposView } from './reposView'
@@ -31,11 +32,15 @@ export function activate(context: vscode.ExtensionContext): void {
     reposTree.onDidChangeCheckboxState((event) => repos.onCheckbox(event)),
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, documents),
     vscode.workspace.onDidSaveTextDocument(() => controller.scheduleRefresh(SAVE_DELAY_MS)),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('liveReview')) void controller.rescanRepos()
+    }),
     vscode.commands.registerCommand('liveReview.refresh', () => controller.rescanRepos()),
     vscode.commands.registerCommand('liveReview.fetch', () => controller.fetchPicked()),
     vscode.commands.registerCommand('liveReview.addRepo', () => addRepo(controller)),
     vscode.commands.registerCommand('liveReview.pinRepo', (node: RepoNode) => pin(store, controller, node.root, true)),
     vscode.commands.registerCommand('liveReview.unpinRepo', (node: RepoNode) => pin(store, controller, node.root, false)),
+    vscode.commands.registerCommand('liveReview.compareTo', (node: RepoNode) => pickCompareTarget(node.root, controller)),
     vscode.commands.registerCommand('liveReview.removeRepo', (node: RepoNode) => controller.removeRepo(node.root)),
     vscode.commands.registerCommand('liveReview.removePlayer', (node: PlayerNode) => controller.removePlayer(node.player.key)),
     vscode.commands.registerCommand('liveReview.clearFinished', (node: SessionNode) => controller.clearFinished(node.view.ref.id)),

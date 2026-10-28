@@ -29,7 +29,7 @@ const STATE_ICONS: Record<PlayerState, vscode.ThemeIcon> = {
 const STATE_ORDER: Record<PlayerState, number> = { working: 0, waiting: 1, done: 2 }
 
 // Every node carries an id built from what it shows (session, agent, repo, file), never from its
-// position, so a refresh finds the same nodes and the ones he expanded stay expanded.
+// position, so a refresh finds the same nodes and the ones the user expanded stay expanded.
 export class SessionsView implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this.changed.event
@@ -48,7 +48,7 @@ export class SessionsView implements vscode.TreeDataProvider<Node> {
   private readonly items: { [K in Node['kind']]: (node: Extract<Node, { kind: K }>) => vscode.TreeItem } = {
     session: (node) => sessionItem(node.view),
     player: (node) => playerItem(node.player),
-    repo: (node) => repoItem(node.player, node.repo),
+    repo: (node) => repoItem(node.player, node.repo, this.controller.model.settings.projectsRoot),
     file: (node) => this.fileItem(node.player, node.file),
     workspace: (node) => workspaceItem(node.view),
     workspaceFile: (node) => workspaceFileItem(node.view, node.file),
@@ -142,9 +142,9 @@ function playerItem(player: Player): vscode.TreeItem {
   return item
 }
 
-function repoItem(player: Player, repo: string | null): vscode.TreeItem {
+function repoItem(player: Player, repo: string | null, projectsRoot: string): vscode.TreeItem {
   const count = player.files.filter((file) => file.repo === repo).length
-  const item = new vscode.TreeItem(repo ? repoName(repo) : OUTSIDE_GIT, vscode.TreeItemCollapsibleState.Expanded)
+  const item = new vscode.TreeItem(repo ? repoName(repo, projectsRoot) : OUTSIDE_GIT, vscode.TreeItemCollapsibleState.Expanded)
   item.id = `repo:${player.key}:${repo ?? OUTSIDE_GIT}`
   item.description = `${count} files`
   item.iconPath = new vscode.ThemeIcon(repo ? 'repo' : 'folder')

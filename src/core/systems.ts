@@ -9,7 +9,7 @@ export const OTHER_SYSTEM = 'Other'
 export const SSH_CONFIG = path.join(os.homedir(), '.ssh', 'config')
 
 const GIT_HOST = /^(github\.com|gitlab\..+|bitbucket\.org)$/i
-// ssh reaches github.com with no Host block at all, so it is always one of his systems.
+// ssh reaches github.com with no Host block at all, so it is always one of your systems.
 const DEFAULT_SYSTEM: GitSystem = { name: 'github.com', hostName: 'github.com' }
 
 // Only the Host and HostName lines are parsed. Keys are never opened: the alias is all a

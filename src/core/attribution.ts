@@ -1,6 +1,5 @@
-import * as os from 'node:os'
 import * as path from 'node:path'
-import { PROJECTS_ROOT } from './repoIndex'
+import { expandHome } from './files'
 import { changedPaths, type RepoRootCache, type RepoState } from './repoState'
 import type { ToolCall } from './transcript'
 
@@ -26,6 +25,7 @@ export type AttributionContext = {
   stateOf: (root: string) => Promise<RepoState>
   mtimeOf: (file: string) => Promise<number>
   now: number
+  projectsRoot: string
 }
 
 // Coarse filesystems round mtimes to the second; a write in the first or last second of a
@@ -79,7 +79,7 @@ async function creditFileTool(change: { file: string; hunks: Hunk[] }, start: nu
 
 async function creditBash(call: ToolCall, attribution: Attribution, context: AttributionContext) {
   const command = String(call.input.command ?? '')
-  const roots = await Promise.all(callDirectories(command, call.cwd).map((dir) => context.roots.rootOf(dir)))
+  const roots = await Promise.all(callDirectories(command, call.cwd, context.projectsRoot).map((dir) => context.roots.rootOf(dir)))
   const repos = new Set(roots.filter((root): root is string => root !== null))
   for (const repo of repos) await creditBashInRepo(call, command, repo, attribution, context)
 }
@@ -119,17 +119,17 @@ function creditOwnCommits(command: string, repo: string, state: RepoState, [from
 // Each candidate still has to be named in the command and saved inside the call's window.
 // The extra folders count only inside the projects folder: a PATH export names ~/.nvm, itself a
 // git clone, and reading its status on every refresh would cost seconds for nothing.
-export function callDirectories(command: string, cwd: string): string[] {
+export function callDirectories(command: string, cwd: string, projectsRoot: string): string[] {
   const leading = command.match(LEADING_CD)
   const directory = leading ? resolveTarget(cwd, leading[1] ?? leading[2] ?? leading[3]) : cwd
   const cdTargets = [...command.matchAll(ANY_CD)].map((match) => resolveTarget(directory, match[1] ?? match[2] ?? match[3]))
   const absolutePaths = [...command.matchAll(ABSOLUTE_PATH)].map((match) => match[1])
-  const extra = [...cdTargets, ...absolutePaths].filter((dir) => dir.startsWith(PROJECTS_ROOT + path.sep))
+  const extra = [...cdTargets, ...absolutePaths].filter((dir) => dir.startsWith(projectsRoot + path.sep))
   return [...new Set([directory, ...extra])]
 }
 
 function resolveTarget(base: string, target: string): string {
-  return path.resolve(base, target.replace(/^~(?=\/|$)/, os.homedir()))
+  return path.resolve(base, expandHome(target))
 }
 
 export function callWindow(call: ToolCall, now: number): [number, number] {

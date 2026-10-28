@@ -3,7 +3,9 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { runGit } from '../core/git'
 import type { Hunk } from '../core/attribution'
+import type { RepoState } from '../core/repoState'
 import type { Controller } from './controller'
+import { isComparing } from './labels'
 
 export const SCHEME = 'live-review'
 
@@ -18,6 +20,7 @@ export type DiffTarget = {
   root: string | null
   relative: string | null
   // A file only in unpushed commits is compared with what the remote has; a dirty one with HEAD.
+  // In compare mode every file is compared with the merge base.
   committedOnly: boolean
   // The player's key, set when its own Edit hunks are the diff to show (see Sessions view).
   agent?: string
@@ -95,10 +98,18 @@ export async function openDiff(target: DiffTarget, controller: Controller): Prom
     await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(target.file))
     return
   }
-  const rev = target.committedOnly ? (controller.model.states.get(target.root)?.baseRev ?? 'HEAD') : 'HEAD'
-  const left = requestUri(name, { kind: 'revision', root: target.root, relative: target.relative, rev })
+  const base = leftSide(controller.model.states.get(target.root), target.committedOnly)
+  const left = requestUri(name, { kind: 'revision', root: target.root, relative: target.relative, rev: base.rev })
+  // A file deleted since the base (status D) is gone from disk: its right side is empty.
   const right = existsSync(target.file) ? vscode.Uri.file(target.file) : requestUri(name, { kind: 'empty' })
-  await vscode.commands.executeCommand('vscode.diff', left, right, `${name} (${rev} vs working tree)`)
+  await vscode.commands.executeCommand('vscode.diff', left, right, `${name} (${base.label} vs working tree)`)
+}
+
+// The revision the left side is read at, and the name the diff title gives it.
+function leftSide(state: RepoState | undefined, committedOnly: boolean): { rev: string; label: string } {
+  if (isComparing(state)) return { rev: state.baseRev, label: state.compareRef }
+  const rev = committedOnly ? (state?.baseRev ?? 'HEAD') : 'HEAD'
+  return { rev, label: rev }
 }
 
 // The path keeps the file name so the diff editor picks the right language.

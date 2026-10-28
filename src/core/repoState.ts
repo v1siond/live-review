@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
+import { compareRefOf, type CompareChoice } from './compare'
 import { runGit } from './git'
 
 export type ChangedFile = { path: string; status: string }
@@ -9,13 +10,21 @@ export type Commit = { sha: string; time: number; subject: string; files: string
 export type RepoState = {
   root: string
   branch: string
-  upstream: string | null
   ahead: number
   behind: number
   uncommitted: ChangedFile[]
+  // Files that differ between baseRev and HEAD and are not dirty: in compare mode the name-status
+  // diff (a deleted file keeps status D), otherwise the files of the unpushed commits.
+  committed: ChangedFile[]
+  // Unpushed commits, or in compare mode the commits ahead of the compare ref.
   unpushed: Commit[]
-  // The revision a committed but unpushed file is compared against: what the remote already has.
+  // The left side of a diff: what the remote already has, or the merge base with compareRef.
   baseRev: string
+  // The branch the user compares this repo to; null compares to HEAD and the upstream.
+  compareRef: string | null
+  // compareRef has no merge base with HEAD (it does not resolve, shares no history, or HEAD has
+  // no commits), so the HEAD comparison is shown instead.
+  compareMissing: boolean
 }
 
 // Enough history to name the files of every unpushed commit a player could have made today,
@@ -24,21 +33,42 @@ const UNPUSHED_LIST_LIMIT = 100
 const RECORD_SEPARATOR = '\x1e'
 const FIELD_SEPARATOR = '\x1f'
 
-export async function readRepoState(root: string): Promise<RepoState> {
+export async function readRepoState(root: string, compareRef: string | null): Promise<RepoState> {
+  const base = compareRef ? await mergeBase(root, compareRef) : null
+  if (compareRef && base) return readComparedState(root, compareRef, base)
+  return { ...(await readHeadState(root)), compareRef, compareMissing: compareRef !== null }
+}
+
+async function readHeadState(root: string): Promise<Omit<RepoState, 'compareRef' | 'compareMissing'>> {
   const [branch, range, uncommitted] = await Promise.all([readBranch(root), readUnpushedRange(root), readUncommitted(root)])
   const [unpushed, ahead, behind] = await Promise.all([
-    readUnpushed(root, range.args),
+    readCommits(root, range.args),
     countRevisions(root, range.args),
     range.upstream ? countRevisions(root, ['HEAD..@{u}']) : Promise.resolve(0),
   ])
-  return { root, branch, upstream: range.upstream, ahead, behind, uncommitted, unpushed, baseRev: baseRevision(range.upstream, unpushed) }
+  const committed = withoutDirty(unique(unpushed.flatMap((commit) => commit.files)).map((file) => ({ path: file, status: '' })), uncommitted)
+  return { root, branch, ahead, behind, uncommitted, committed, unpushed, baseRev: baseRevision(range.upstream, unpushed) }
+}
+
+// Everything between the merge base and the working tree: the base is where HEAD left compareRef,
+// so commits that landed on compareRef since then never show as changes of this branch.
+async function readComparedState(root: string, compareRef: string, base: string): Promise<RepoState> {
+  const [branch, uncommitted, unpushed, diff, sides] = await Promise.all([
+    readBranch(root),
+    readUncommitted(root),
+    readCommits(root, [`${base}..HEAD`]),
+    readCommittedDiff(root, base),
+    countSides(root, compareRef),
+  ])
+  const committed = withoutDirty(diff, uncommitted)
+  return { root, branch, ...sides, uncommitted, committed, unpushed, baseRev: base, compareRef, compareMissing: false }
 }
 
 export function hasWork(state: RepoState): boolean {
-  return state.uncommitted.length > 0 || state.unpushed.length > 0
+  return state.uncommitted.length > 0 || state.committed.length > 0 || state.unpushed.length > 0
 }
 
-// Every repo-relative path a player could have changed: dirty now, or inside an unpushed commit.
+// Every repo-relative path a player could have changed: dirty now, or committed since the base.
 // Built once per state: every Bash call and every credited file of every player asks for it.
 const changedPathsByState = new WeakMap<RepoState, Map<string, 'uncommitted' | 'unpushed'>>()
 
@@ -46,10 +76,19 @@ export function changedPaths(state: RepoState): Map<string, 'uncommitted' | 'unp
   const known = changedPathsByState.get(state)
   if (known) return known
   const paths = new Map<string, 'uncommitted' | 'unpushed'>()
-  state.unpushed.forEach((commit) => commit.files.forEach((file) => paths.set(file, 'unpushed')))
+  state.committed.forEach((file) => paths.set(file.path, 'unpushed'))
   state.uncommitted.forEach((file) => paths.set(file.path, 'uncommitted'))
   changedPathsByState.set(state, paths)
   return paths
+}
+
+function withoutDirty(files: ChangedFile[], uncommitted: ChangedFile[]): ChangedFile[] {
+  const dirty = new Set(uncommitted.map((file) => file.path))
+  return files.filter((file) => !dirty.has(file.path))
+}
+
+function unique(paths: string[]): string[] {
+  return [...new Set(paths)]
 }
 
 async function readBranch(root: string): Promise<string> {
@@ -85,7 +124,7 @@ function parsePorcelain(output: string): ChangedFile[] {
   return files
 }
 
-async function readUnpushed(root: string, range: string[]): Promise<Commit[]> {
+async function readCommits(root: string, range: string[]): Promise<Commit[]> {
   const format = `--format=${RECORD_SEPARATOR}%H${FIELD_SEPARATOR}%ct${FIELD_SEPARATOR}%s`
   const log = await runGit(root, ['log', `-n${UNPUSHED_LIST_LIMIT}`, format, '--name-only', ...range])
   if (!log.ok) return []
@@ -102,6 +141,40 @@ async function countRevisions(root: string, range: string[]): Promise<number> {
   const count = await runGit(root, ['rev-list', '--count', ...range])
   if (!count.ok) return 0
   return Number(count.stdout.trim())
+}
+
+async function mergeBase(root: string, compareRef: string): Promise<string | null> {
+  const base = await runGit(root, ['merge-base', compareRef, 'HEAD'])
+  return base.ok ? base.stdout.trim() : null
+}
+
+// "<only on compareRef>\t<only on HEAD>": the first field is how far behind, the second how far ahead.
+async function countSides(root: string, compareRef: string): Promise<{ ahead: number; behind: number }> {
+  const counts = await runGit(root, ['rev-list', '--left-right', '--count', `${compareRef}...HEAD`])
+  if (!counts.ok) return { ahead: 0, behind: 0 }
+  const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number)
+  return { ahead, behind }
+}
+
+async function readCommittedDiff(root: string, base: string): Promise<ChangedFile[]> {
+  const diff = await runGit(root, ['diff', '--name-status', '-z', base, 'HEAD'])
+  if (!diff.ok) return []
+  return parseNameStatus(diff.stdout)
+}
+
+// Name-status with -z: "<status>\0<path>\0", and a rename or copy carries "<old>\0<new>\0"; the
+// new path is the one in the working tree. The status keeps its letter only (R100 is R).
+function parseNameStatus(output: string): ChangedFile[] {
+  const fields = output.split('\0').filter(Boolean)
+  const files: ChangedFile[] = []
+  let index = 0
+  while (index < fields.length) {
+    const status = fields[index]
+    const paired = /^[RC]/.test(status)
+    files.push({ path: fields[index + (paired ? 2 : 1)], status: status.charAt(0) })
+    index += paired ? 3 : 2
+  }
+  return files
 }
 
 function baseRevision(upstream: string | null, unpushed: Commit[]): string {
@@ -166,12 +239,12 @@ async function nearestExistingDir(dir: string): Promise<string> {
 }
 
 // One read per repo per refresh, shared by every player whose calls land in it.
-export function repoStateLoader(): (root: string) => Promise<RepoState> {
+export function repoStateLoader(choiceOf: (root: string) => CompareChoice): (root: string) => Promise<RepoState> {
   const states = new Map<string, Promise<RepoState>>()
   return (root) => {
     const known = states.get(root)
     if (known) return known
-    const state = readRepoState(root)
+    const state = compareRefOf(root, choiceOf(root)).then((compareRef) => readRepoState(root, compareRef))
     states.set(root, state)
     return state
   }

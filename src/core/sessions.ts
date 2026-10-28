@@ -1,11 +1,10 @@
 import { promises as fs } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { PROJECTS_ROOT } from './repoIndex'
 
 export type SessionRef = {
   id: string
-  // Where the session runs, relative to the projects folder: "game-engine", "REDACTEDREDACTED".
+  // Where the session runs, relative to the projects folder: "shop", "shop/api".
   project: string
   transcript: string
   subagentsDir: string
@@ -21,8 +20,8 @@ type RegistryEntry = { sessionId?: unknown; cwd?: unknown; startedAt?: unknown; 
 
 const AGENT_TRANSCRIPT = /^agent-(.+)\.jsonl$/
 const REGISTRY_FILE = /^(\d+)\.json$/
-// A terminal session he opened. Headless runs (`claude -p`, the SDK) say "sdk-cli", and background
-// jobs say kind "bg"; neither is a session he has open.
+// A terminal session the user opened. Headless runs (`claude -p`, the SDK) say "sdk-cli", and
+// background jobs say kind "bg"; neither is a session the user has open.
 const INTERACTIVE = { kind: 'interactive', entrypoint: 'cli' }
 // Field 22 of /proc/<pid>/stat, the process start in clock ticks: the registry keeps it so a pid
 // the system gave to another process is not taken for the session.
@@ -40,16 +39,17 @@ export class SessionIndex {
 
   constructor(
     private readonly registry: string,
-    private readonly projectsRoot: string,
+    private readonly claudeProjects: string,
   ) {}
 
-  async listLive(): Promise<SessionRef[]> {
+  // projectsRoot only names each session: its cwd relative to that folder.
+  async listLive(projectsRoot: string): Promise<SessionRef[]> {
     const pids = (await readDirNames(this.registry)).map((name) => name.match(REGISTRY_FILE)?.[1]).filter((pid): pid is string => pid !== undefined)
-    const sessions = await Promise.all(pids.map((pid) => this.sessionOf(pid)))
+    const sessions = await Promise.all(pids.map((pid) => this.sessionOf(pid, projectsRoot)))
     return sessions.filter((session): session is SessionRef => session !== null).sort((a, b) => b.startedAt - a.startedAt)
   }
 
-  private async sessionOf(pid: string): Promise<SessionRef | null> {
+  private async sessionOf(pid: string, projectsRoot: string): Promise<SessionRef | null> {
     const procStart = await processStart(pid)
     if (procStart === null) return null
     const entry = await readEntry(path.join(this.registry, `${pid}.json`))
@@ -58,7 +58,7 @@ export class SessionIndex {
     const cwd = String(entry.cwd ?? '')
     const transcript = await this.transcriptOf(id, cwd)
     const subagentsDir = path.join(path.dirname(transcript), id, 'subagents')
-    return { id, project: projectLabel(cwd), transcript, subagentsDir, startedAt: Number(entry.startedAt) }
+    return { id, project: projectLabel(cwd, projectsRoot), transcript, subagentsDir, startedAt: Number(entry.startedAt) }
   }
 
   // Claude Code names a project folder after the cwd with every character other than a letter or
@@ -66,14 +66,14 @@ export class SessionIndex {
   private async transcriptOf(id: string, cwd: string): Promise<string> {
     const known = this.transcripts.get(id)
     if (known) return known
-    const named = path.join(this.projectsRoot, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`)
+    const named = path.join(this.claudeProjects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`)
     const found = (await exists(named)) ? named : await this.searchTranscript(id)
     if (found) this.transcripts.set(id, found)
     return found ?? named
   }
 
   private async searchTranscript(id: string): Promise<string | null> {
-    const candidates = (await readDirNames(this.projectsRoot)).map((project) => path.join(this.projectsRoot, project, `${id}.jsonl`))
+    const candidates = (await readDirNames(this.claudeProjects)).map((project) => path.join(this.claudeProjects, project, `${id}.jsonl`))
     const present = await Promise.all(candidates.map(exists))
     return candidates.find((_candidate, index) => present[index]) ?? null
   }
@@ -136,9 +136,9 @@ export async function readMeta(file: string): Promise<AgentMeta> {
   }
 }
 
-function projectLabel(cwd: string): string {
-  const relative = path.relative(PROJECTS_ROOT, cwd)
-  if (relative === '') return path.basename(PROJECTS_ROOT)
+function projectLabel(cwd: string, projectsRoot: string): string {
+  const relative = path.relative(projectsRoot, cwd)
+  if (relative === '') return path.basename(projectsRoot)
   if (relative.startsWith('..')) return cwd
   return relative
 }

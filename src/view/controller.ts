@@ -1,5 +1,7 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import * as vscode from 'vscode'
+import { expandHome } from '../core/files'
 import { runGit } from '../core/git'
 import { SessionReader, type GitView, type History, type Player } from '../core/players'
 import { indexRepos, repoEntry, type RepoEntry } from '../core/repoIndex'
@@ -11,20 +13,24 @@ import type { Store } from './store'
 
 export type SessionView = { ref: SessionRef; players: Player[]; workspace: WorkspaceFile[] }
 
+// The liveReview.* settings, read again on every refresh so a change applies without a reload.
+export type Settings = { projectsRoot: string; scanDepth: number; workspaceRoot: string; defaultCompareBranch: string }
+
 export type Model = {
-  // The sessions and players he has not removed, newest session first.
+  // The sessions and players the user has not removed, newest session first.
   sessions: SessionView[]
   // Every player of those sessions, for the views that tag files and repos by writer.
   players: Player[]
   systems: GitSystem[]
   repos: RepoEntry[]
   states: Map<string, RepoState>
+  settings: Settings
 }
 
 // A player appends to its transcript several times a second; the refresh waits 2 s after the
 // first append and takes every append of those 2 s in one pass.
 const TRANSCRIPT_DELAY_MS = 2000
-// Picked repos are re-read on this beat, so a save by him or by a player shows within 5 s.
+// Picked repos are re-read on this beat, so a save by the user or by a player shows within 5 s.
 const REPO_POLL_MS = 4000
 const SESSION_CHECK_MS = 30_000
 const FETCH_EVERY_MS = 10 * 60 * 1000
@@ -37,14 +43,13 @@ type Tracked = { reader: SessionReader; view: SessionView | null; watcher: fs.FS
 export class Controller implements vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<void>()
   readonly onDidChange = this.changed.event
-  readonly model: Model = { sessions: [], players: [], systems: [], repos: [], states: new Map() }
+  readonly model: Model = { sessions: [], players: [], systems: [], repos: [], states: new Map(), settings: readSettings() }
   private readonly roots = new RepoRootCache()
   private readonly index = new SessionIndex(CLAUDE_SESSIONS, CLAUDE_PROJECTS)
-  // Sessions stay tracked for the life of the window, even once their process ends: only his x
-  // takes one off the panel.
+  // Sessions stay tracked for the life of the window, even once their process ends: only the
+  // user's x takes one off the panel.
   private readonly tracked = new Map<string, Tracked>()
-  private readonly workspaceRoot: string
-  private readonly scanner: WorkspaceScanner
+  private readonly scanner = new WorkspaceScanner()
   private sshWatcher: fs.FSWatcher | null = null
   private pendingRefresh: NodeJS.Timeout | null = null
   private refreshing = false
@@ -56,10 +61,7 @@ export class Controller implements vscode.Disposable {
   constructor(
     private readonly store: Store,
     private readonly log: vscode.OutputChannel,
-  ) {
-    this.workspaceRoot = vscode.workspace.getConfiguration('liveReview').get<string>('workspaceRoot', '')
-    this.scanner = new WorkspaceScanner(this.workspaceRoot)
-  }
+  ) {}
 
   async start(): Promise<void> {
     await this.guard('start', async () => {
@@ -75,13 +77,16 @@ export class Controller implements vscode.Disposable {
   }
 
   // Every repo under the projects folder, its system and its state: run at start, on Refresh
-  // and when ~/.ssh/config changes. The 4 s beat re-reads only the picked and played repos.
+  // and when ~/.ssh/config or a liveReview setting changes. The 4 s beat re-reads only the picked and played repos.
   async rescanRepos(): Promise<void> {
+    const settings = readSettings()
+    this.model.settings = settings
     this.model.systems = await readSystems(SSH_CONFIG)
     const extra = [...this.store.added(), ...this.playedRepos()]
     const removed = this.store.removed()
-    this.model.repos = (await indexRepos(extra, this.model.systems)).filter((entry) => !removed.has(entry.root))
-    const stateOf = repoStateLoader()
+    const scan = { projectsRoot: settings.projectsRoot, depth: settings.scanDepth }
+    this.model.repos = (await indexRepos(scan, extra, this.model.systems)).filter((entry) => !removed.has(entry.root))
+    const stateOf = this.stateLoader()
     const states = await Promise.all(this.model.repos.map((entry) => stateOf(entry.root)))
     this.model.states = new Map(states.map((state) => [state.root, state]))
     this.changed.fire()
@@ -149,6 +154,14 @@ export class Controller implements vscode.Disposable {
     await this.rescanRepos()
   }
 
+  // Only this repo is read again: its summary, commits and files all change with the base.
+  async compareTo(root: string, value: string | undefined): Promise<void> {
+    await this.store.setCompareTo(root, value)
+    const state = await this.stateLoader()(root)
+    this.model.states.set(root, state)
+    this.changed.fire()
+  }
+
   async removeRepo(root: string): Promise<void> {
     await this.store.removeRepo(root)
     this.model.repos = this.model.repos.filter((entry) => entry.root !== root)
@@ -172,7 +185,8 @@ export class Controller implements vscode.Disposable {
   // Sessions are read one after the other, for the same memory reason as their transcripts. A
   // session whose read fails keeps its previous view.
   private async refreshLive(): Promise<void> {
-    const git: GitView = { roots: this.roots, stateOf: repoStateLoader() }
+    this.model.settings = readSettings()
+    const git: GitView = { roots: this.roots, stateOf: this.stateLoader(), projectsRoot: this.model.settings.projectsRoot }
     const now = Date.now()
     for (const entry of this.tracked.values()) {
       await this.guard(`read session ${entry.reader.session.id}`, async () => {
@@ -192,10 +206,17 @@ export class Controller implements vscode.Disposable {
   private async readSession(reader: SessionReader, git: GitView, now: number): Promise<SessionView> {
     const ref = reader.session
     const history = this.store.history(ref.id)
-    const read = await reader.read(this.workspaceRoot, history, git, now)
+    const { workspaceRoot } = this.model.settings
+    const read = await reader.read(workspaceRoot, history, git, now)
     await this.remember(ref.id, history, read.players)
-    const workspace = await this.scanner.filesSince(read.workspaceFolders, ref.startedAt, now)
+    const workspace = await this.scanner.filesSince(workspaceRoot, read.workspaceFolders, ref.startedAt, now)
     return { ref, players: read.players, workspace }
+  }
+
+  // Each repo is compared to its stored pick, or else to the default branch setting.
+  private stateLoader(): (root: string) => Promise<RepoState> {
+    const fallback = this.model.settings.defaultCompareBranch
+    return repoStateLoader((root) => ({ stored: this.store.compareTo(root), fallback }))
   }
 
   private publishSessions(): void {
@@ -239,7 +260,7 @@ export class Controller implements vscode.Disposable {
   // New live sessions join the panel; the ones already tracked keep their reader and their view.
   private async discoverSessions(): Promise<void> {
     this.tracked.forEach((entry) => (entry.watcher ??= this.watchPlayers(entry.reader.session)))
-    const live = await this.index.listLive()
+    const live = await this.index.listLive(this.model.settings.projectsRoot)
     const fresh = live.filter((ref) => !this.tracked.has(ref.id))
     if (fresh.length === 0) return
     fresh.forEach((ref) => this.tracked.set(ref.id, { reader: new SessionReader(ref), view: null, watcher: this.watchPlayers(ref) }))
@@ -270,11 +291,22 @@ function watchFile(target: string, onChange: () => void): fs.FSWatcher | null {
   return watcher
 }
 
-// Shown unless he removed it and it changed nothing since.
+// Shown unless the user removed it and it changed nothing since.
 function isShown(dismissedAt: number | undefined, lastChange: number): boolean {
   return dismissedAt === undefined || lastChange > dismissedAt
 }
 
 function latestChange(players: Player[]): number {
   return Math.max(0, ...players.map((player) => player.lastChange))
+}
+
+function readSettings(): Settings {
+  const config = vscode.workspace.getConfiguration('liveReview')
+  const workspaceRoot = config.get<string>('workspaceRoot', '').trim()
+  return {
+    projectsRoot: path.resolve(expandHome(config.get<string>('projectsRoot', '~/projects'))),
+    scanDepth: config.get<number>('scanDepth', 3),
+    workspaceRoot: workspaceRoot && path.resolve(expandHome(workspaceRoot)),
+    defaultCompareBranch: config.get<string>('defaultCompareBranch', '').trim(),
+  }
 }

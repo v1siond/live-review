@@ -2,11 +2,11 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import type { Player } from '../core/players'
 import type { RepoEntry } from '../core/repoIndex'
-import { changedPaths, hasWork, type Commit } from '../core/repoState'
+import { changedPaths, hasWork, type Commit, type RepoState } from '../core/repoState'
 import { OTHER_SYSTEM } from '../core/systems'
 import type { Controller } from './controller'
 import type { DiffTarget } from './documents'
-import { playerTag, repoName, repoSummary } from './labels'
+import { commitWords, playerTag, repoName, repoSummary } from './labels'
 import type { Store } from './store'
 
 export type FileNode = { kind: 'file'; root: string; relative: string; status: string; committedOnly: boolean }
@@ -14,7 +14,7 @@ export type FileNode = { kind: 'file'; root: string; relative: string; status: s
 type Node = { kind: 'system'; name: string } | { kind: 'repo'; root: string } | FileNode | { kind: 'commit'; root: string; commit: Commit }
 
 // Rank inside a system: repos a player of the session edited, then pinned, then repos with
-// work to review; a repo with nothing uncommitted or unpushed sorts last.
+// work to review; a repo with nothing uncommitted, committed or unpushed sorts last.
 const RANK = { played: 0, pinned: 1, work: 2, idle: 3 }
 
 export class ReposView implements vscode.TreeDataProvider<Node> {
@@ -34,7 +34,7 @@ export class ReposView implements vscode.TreeDataProvider<Node> {
     system: (node) => this.systemItem(node.name),
     repo: (node) => this.repoItem(node.root),
     file: (node) => fileItem(node),
-    commit: (node) => commitItem(node.commit),
+    commit: (node) => commitItem(node.commit, this.controller.model.states.get(node.root)),
   }
 
   constructor(
@@ -112,7 +112,7 @@ export class ReposView implements vscode.TreeDataProvider<Node> {
   private repoItem(root: string): vscode.TreeItem {
     const state = this.controller.model.states.get(root)
     const work = state ? hasWork(state) : false
-    const item = new vscode.TreeItem(repoName(root), work ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
+    const item = new vscode.TreeItem(repoName(root, this.controller.model.settings.projectsRoot), work ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
     const players = this.playersByRepo.get(root) ?? []
     item.description = [players.join(', '), repoSummary(state)].filter(Boolean).join(' | ')
     item.tooltip = `${root}\norigin: ${this.originOf(root)}`
@@ -154,9 +154,9 @@ function tagsByRepo(players: Player[]): Map<string, string[]> {
   return new Map([...tags].map(([repo, names]) => [repo, [...names]]))
 }
 
-function commitItem(commit: Commit): vscode.TreeItem {
+function commitItem(commit: Commit, state: RepoState | undefined): vscode.TreeItem {
   const item = new vscode.TreeItem(commit.subject, vscode.TreeItemCollapsibleState.Collapsed)
-  item.description = `${commit.sha.slice(0, 8)}, ${new Date(commit.time).toLocaleString()}, not pushed`
+  item.description = `${commit.sha.slice(0, 8)}, ${new Date(commit.time).toLocaleString()}, ${commitWords(state)}`
   item.iconPath = new vscode.ThemeIcon('git-commit')
   return item
 }

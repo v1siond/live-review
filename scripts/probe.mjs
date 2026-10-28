@@ -1,45 +1,84 @@
-// node scripts/probe.mjs [sessionId]
-// Prints what the Sessions section would show, read with the compiled parsers and no VS Code: one
-// block per live Claude session with "you" and every player, each with its verdict and files, then
-// the session's workspace files; after the sessions, his git systems and the repo count per
-// system. A session id prints only that session. Run `npm run compile` first.
+// Prints what the panel would show, read with the compiled parsers and no VS Code. Run
+// `npm run compile` first.
+//
+//   node scripts/probe.mjs [sessionId] [--projects-root <dir>] [--scan-depth <n>]
+//     One block per live Claude session with "you" and every player, each with its verdict and
+//     files, then the session's workspace files; after the sessions, your git systems and the repo
+//     count per system. A session id prints only that session.
+//
+//   node scripts/probe.mjs --repo <root> [--compare <ref>] [--projects-root <dir>]
+//     Reads no sessions. Line 1 is the repo's summary as the Repos section shows it, then every
+//     changed path of the repo, one per line, sorted and unique. --compare compares the repo to
+//     that branch, as a pick of Compare to a branch would.
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
 const require = createRequire(import.meta.url)
-const out = (name) => require(path.join(import.meta.dirname, '..', 'out', 'core', name))
-const { CLAUDE_PROJECTS, CLAUDE_SESSIONS, SessionIndex } = out('sessions.js')
-const { SessionReader } = out('players.js')
-const { RepoRootCache, repoStateLoader } = out('repoState.js')
-const { readSystems, OTHER_SYSTEM, SSH_CONFIG } = out('systems.js')
-const { indexRepos } = out('repoIndex.js')
-const { WorkspaceScanner } = out('workspace.js')
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const out = (name) => require(path.join(root, 'out', name))
+const { CLAUDE_PROJECTS, CLAUDE_SESSIONS, SessionIndex } = out('core/sessions.js')
+const { SessionReader } = out('core/players.js')
+const { RepoRootCache, changedPaths, repoStateLoader } = out('core/repoState.js')
+const { readSystems, OTHER_SYSTEM, SSH_CONFIG } = out('core/systems.js')
+const { indexRepos } = out('core/repoIndex.js')
+const { WorkspaceScanner } = out('core/workspace.js')
+const { expandHome } = out('core/files.js')
+const { repoSummary } = out('view/labels.js')
 
-// The extension's own default for liveReview.workspaceRoot; the probe has no VS Code settings.
-const WORKSPACE_ROOT = require('../package.json').contributes.configuration.properties['liveReview.workspaceRoot'].default
+// The extension's own setting defaults; the probe has no VS Code settings.
+const settings = require('../package.json').contributes.configuration.properties
+const defaultOf = (key) => String(settings[`liveReview.${key}`].default)
 // The newest workspace files printed per session; the count above them is the full list.
 const WORKSPACE_SHOWN = 8
 
-const now = Date.now()
-const git = { roots: new RepoRootCache(), stateOf: repoStateLoader() }
-const scanner = new WorkspaceScanner(WORKSPACE_ROOT)
-const live = await new SessionIndex(CLAUDE_SESSIONS, CLAUDE_PROJECTS).listLive()
-const sessions = live.filter((session) => !process.argv[2] || session.id === process.argv[2])
-if (sessions.length === 0) throw new Error(`no live session${process.argv[2] ? ` ${process.argv[2]}` : ''} in ${CLAUDE_SESSIONS}`)
+const { values: options, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    repo: { type: 'string' },
+    compare: { type: 'string' },
+    'projects-root': { type: 'string', default: defaultOf('projectsRoot') },
+    'scan-depth': { type: 'string', default: defaultOf('scanDepth') },
+  },
+})
+const projectsRoot = path.resolve(expandHome(options['projects-root']))
+const workspaceRoot = defaultOf('workspaceRoot')
 
-console.log(`live sessions: ${sessions.length}`)
-const allPlayers = []
-for (const session of sessions) {
-  const started = Date.now()
-  const read = await new SessionReader(session).read(WORKSPACE_ROOT, new Map(), git, now)
-  const workspace = await scanner.filesSince(read.workspaceFolders, session.startedAt, now)
-  allPlayers.push(...read.players)
-  printSession(session, read, workspace, Date.now() - started)
+const modes = { repo: () => probeRepo(path.resolve(expandHome(options.repo)), options.compare), sessions: () => probeSessions(positionals[0]) }
+await modes[options.repo ? 'repo' : 'sessions']()
+
+// --compare is an explicit pick; without it the repo keeps the HEAD comparison.
+async function probeRepo(repo, compare) {
+  const stateOf = repoStateLoader(() => ({ stored: compare, fallback: '' }))
+  const state = await stateOf(repo)
+  const paths = [...changedPaths(state).keys()].sort()
+  console.log([repoSummary(state), ...paths].join('\n'))
 }
 
-const systems = await readSystems(SSH_CONFIG)
-const editedRoots = [...new Set(allPlayers.flatMap((player) => player.files.map((file) => file.repo)).filter(Boolean))]
-printSystems(systems, await indexRepos(editedRoots, systems))
+async function probeSessions(sessionId) {
+  const now = Date.now()
+  const git = { roots: new RepoRootCache(), stateOf: repoStateLoader(() => ({ stored: undefined, fallback: '' })), projectsRoot }
+  const scanner = new WorkspaceScanner()
+  const live = await new SessionIndex(CLAUDE_SESSIONS, CLAUDE_PROJECTS).listLive(projectsRoot)
+  const sessions = live.filter((session) => !sessionId || session.id === sessionId)
+  if (sessions.length === 0) throw new Error(`no live session${sessionId ? ` ${sessionId}` : ''} in ${CLAUDE_SESSIONS}`)
+
+  console.log(`live sessions: ${sessions.length}`)
+  const allPlayers = []
+  for (const session of sessions) {
+    const started = Date.now()
+    const read = await new SessionReader(session).read(workspaceRoot, new Map(), git, now)
+    const workspace = await scanner.filesSince(workspaceRoot, read.workspaceFolders, session.startedAt, now)
+    allPlayers.push(...read.players)
+    printSession(session, read, workspace, Date.now() - started)
+  }
+
+  const systems = await readSystems(SSH_CONFIG)
+  const editedRoots = [...new Set(allPlayers.flatMap((player) => player.files.map((file) => file.repo)).filter(Boolean))]
+  const scan = { projectsRoot, depth: Number(options['scan-depth']) }
+  printSystems(systems, await indexRepos(scan, editedRoots, systems))
+}
 
 function printSession(session, read, workspace, readMs) {
   console.log(`\n=== ${session.project}, started ${new Date(session.startedAt).toISOString()} (session ${session.id}, read in ${readMs} ms)`)
@@ -64,8 +103,7 @@ function printPlayer(player, players) {
 }
 
 function printByRepo(files, tag) {
-  const byRepo = Map.groupBy(files, (file) => file.repo ?? 'outside git')
-  for (const [repo, entries] of byRepo) {
+  for (const [repo, entries] of groupBy(files, (file) => file.repo ?? 'outside git')) {
     console.log(`      ${repo}`)
     entries.forEach((file) => console.log(`        ${file.relative ?? file.file} ${tag(file)}`))
   }
@@ -81,7 +119,7 @@ function writtenBy(file, self, players) {
 
 function printSystems(systemList, entries) {
   console.log(`\nsystems: ${systemList.length}`)
-  const counts = Map.groupBy(entries, (entry) => entry.system)
+  const counts = groupBy(entries, (entry) => entry.system)
   for (const name of [...systemList.map((system) => system.name), OTHER_SYSTEM]) {
     console.log(`  ${name}: ${counts.get(name)?.length ?? 0} repos`)
   }
@@ -89,4 +127,11 @@ function printSystems(systemList, entries) {
   const added = entries.filter((entry) => entry.found === 'added')
   console.log(`total repos: ${entries.length} = ${scanned} scanned + ${added.length} edited by a player outside the scan`)
   added.forEach((entry) => console.log(`  ${entry.root}`))
+}
+
+// Map.groupBy needs Node 21; the probe runs on Node 18.
+function groupBy(items, keyOf) {
+  const groups = new Map()
+  items.forEach((item) => groups.set(keyOf(item), [...(groups.get(keyOf(item)) ?? []), item]))
+  return groups
 }

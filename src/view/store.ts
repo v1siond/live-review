@@ -7,16 +7,19 @@ const ADDED = 'liveReview.added'
 const REMOVED = 'liveReview.removed'
 const HISTORY = 'liveReview.sessionHistory'
 const DISMISSED = 'liveReview.dismissed'
+const COMPARE_TO = 'liveReview.compareTo'
 
 // Per session id, then per agent id, the files credited to it by the Bash window rule.
 type StoredHistory = Record<string, Record<string, string[]>>
-// Per dismissed key (a session id, or "<session id>/<agent id>"), when he removed it.
+// Per dismissed key (a session id, or "<session id>/<agent id>"), when the user removed it.
 type StoredDismissed = Record<string, number>
+// Per repo root, the branch it is compared to, or "HEAD"; a missing root takes the default.
+type StoredCompareTo = Record<string, string>
 
-// What he chose lives in globalState, so every window shows the same picks and the same removed
+// What the user chose lives in globalState, so every window shows the same picks and the same removed
 // sessions and players. The Bash credits seen per session live in workspaceState: each window
 // rebuilds them from the transcripts anyway, they only keep a credit a later save would hide.
-// Both maps keep only the sessions still listed, so neither grows with every session he ever ran.
+// Both maps keep only the sessions still listed, so neither grows with every session ever run.
 export class Store {
   constructor(
     private readonly global: vscode.Memento,
@@ -55,6 +58,16 @@ export class Store {
   async removeRepo(root: string): Promise<void> {
     await Promise.all([PICKED, PINNED, ADDED].map((key) => this.toggle(this.global, key, root, false)))
     await this.toggle(this.global, REMOVED, root, true)
+  }
+
+  compareTo(root: string): string | undefined {
+    return this.global.get<StoredCompareTo>(COMPARE_TO, {})[root]
+  }
+
+  // undefined drops the root, so the default branch setting applies to it again.
+  setCompareTo(root: string, value: string | undefined): Thenable<void> {
+    const { [root]: _previous, ...others } = this.global.get<StoredCompareTo>(COMPARE_TO, {})
+    return this.global.update(COMPARE_TO, value === undefined ? others : { ...others, [root]: value })
   }
 
   history(session: string): History {

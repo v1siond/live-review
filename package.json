@@ -2,10 +2,17 @@
   "name": "live-review",
   "displayName": "Live Review",
   "description": "The repos you pick, every live Claude session with its players and the files each one changed, with a diff per file, and the workspace notes each session wrote.",
-  "version": "0.2.1",
-  "publisher": "visiond",
-  "private": true,
-  "license": "UNLICENSED",
+  "version": "0.3.0",
+  "publisher": "v1siond",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/v1siond/live-review.git"
+  },
+  "homepage": "https://github.com/v1siond/live-review#readme",
+  "bugs": {
+    "url": "https://github.com/v1siond/live-review/issues"
+  },
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -72,6 +79,11 @@
         "icon": "$(pinned)"
       },
       {
+        "command": "liveReview.compareTo",
+        "title": "Compare to a branch",
+        "icon": "$(git-compare)"
+      },
+      {
         "command": "liveReview.removeRepo",
         "title": "Remove from the list",
         "icon": "$(close)"
@@ -120,6 +132,11 @@
       ],
       "view/item/context": [
         {
+          "command": "liveReview.compareTo",
+          "when": "view == liveReview.repos && viewItem =~ /^repo\\./",
+          "group": "inline@0"
+        },
+        {
           "command": "liveReview.pinRepo",
           "when": "view == liveReview.repos && viewItem =~ /^repo\\.unpinned/",
           "group": "inline@1"
@@ -151,6 +168,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "liveReview.compareTo",
+          "when": "false"
+        },
         {
           "command": "liveReview.pinRepo",
           "when": "false"
@@ -188,10 +209,26 @@
     "configuration": {
       "title": "Live Review",
       "properties": {
+        "liveReview.projectsRoot": {
+          "type": "string",
+          "default": "~/projects",
+          "description": "The folder scanned for git clones. A leading ~ is your home folder. Session names are shown relative to it, and a Bash call only adds repos found inside it."
+        },
+        "liveReview.scanDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "How many folder levels under liveReview.projectsRoot are searched for a .git folder. 3 finds projects/group/repo."
+        },
         "liveReview.workspaceRoot": {
           "type": "string",
-          "default": "~/projects/REDACTED/.claude-workspace",
-          "description": "The folder that holds one notes folder per project, outside every repo. A session's Workspace files are the files saved since it started in the folders its Write and Edit calls touched here, and a player's row and job come from the ORCHESTRA.md of those folders."
+          "default": "",
+          "description": "Optional. A folder outside every repo that holds one notes folder per project. When set, each session lists the files saved there since it started (Workspace files), and a player whose description says \"Row <n>\" gets its row and job from the ORCHESTRA.md of those folders. Empty turns both off."
+        },
+        "liveReview.defaultCompareBranch": {
+          "type": "string",
+          "default": "",
+          "description": "A branch every repo is compared to (for example origin/main) unless you picked something else for it with Compare to a branch. A repo where this branch does not exist keeps the HEAD comparison. Empty compares every repo to HEAD."
         }
       }
     }

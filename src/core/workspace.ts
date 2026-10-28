@@ -15,8 +15,9 @@ const SCAN_TTL_MS = 15_000
 
 // The workspace folders a session writes its notes in: the first folder under the workspace root
 // of every file its Write and Edit calls name there. A folder can be a symlink to another
-// (REDACTED -> game-engine), so each is resolved and listed once.
+// (website -> app), so each is resolved and listed once. An empty root turns the feature off.
 export async function workspaceFolders(calls: ToolCall[], root: string): Promise<string[]> {
+  if (!root) return []
   const names = new Set(calls.map((call) => folderUnder(changedFileOf(call), root)).filter((name): name is string => name !== null))
   const resolved = await Promise.all([...names].map((name) => fs.realpath(path.join(root, name)).catch(() => null)))
   return [...new Set(resolved.filter((folder): folder is string => folder !== null))]
@@ -33,16 +34,15 @@ function folderUnder(file: string | null, root: string): string | null {
 export class WorkspaceScanner {
   private readonly scans = new Map<string, Scan>()
 
-  constructor(private readonly root: string) {}
-
-  // Files of the folders saved at or after the session started, newest first.
-  async filesSince(folders: string[], since: number, now: number): Promise<WorkspaceFile[]> {
+  // Files of the folders saved at or after the session started, newest first, each named relative
+  // to the workspace root.
+  async filesSince(root: string, folders: string[], since: number, now: number): Promise<WorkspaceFile[]> {
     const scans = await Promise.all(folders.map((folder) => this.scanOf(folder, now)))
     return scans
       .flatMap((scan) => scan.files)
       .filter((entry) => entry.mtime >= since)
       .sort((a, b) => b.mtime - a.mtime)
-      .map((entry) => ({ ...entry, relative: path.relative(this.root, entry.file) }))
+      .map((entry) => ({ ...entry, relative: path.relative(root, entry.file) }))
   }
 
   private async scanOf(folder: string, now: number): Promise<Scan> {

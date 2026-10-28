@@ -38,7 +38,8 @@ export type Player = {
 
 type SessionRead = { players: Player[]; workspaceFolders: string[] }
 
-export type GitView = { roots: RepoRootCache; stateOf: (root: string) => Promise<RepoState> }
+// projectsRoot bounds which extra folders a Bash call can name as repos (see callDirectories).
+export type GitView = { roots: RepoRootCache; stateOf: (root: string) => Promise<RepoState>; projectsRoot: string }
 
 // Files credited earlier by the window rule, per player; a later write by someone else moves
 // the mtime out of the window, so the earlier credit would otherwise be lost.
@@ -46,10 +47,10 @@ export type History = Map<string, Set<string>>
 
 const QUIET_MS = 10 * 60 * 1000
 
-// The session's own agent, the one he talks to, listed beside its players.
+// The session's own agent, the one the user talks to, listed beside its players.
 const MAIN_AGENT = 'main'
 const MAIN_DESCRIPTION = 'you'
-// The table of tickets each workspace folder keeps; a player's "Row <n>" is looked up in it.
+// The optional table of tickets each workspace folder keeps; a player's "Row <n>" is looked up in it.
 const RECORD_FILE = 'ORCHESTRA.md'
 
 type Source = { id: string; transcript: string; description: () => Promise<string> }
